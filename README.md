@@ -155,7 +155,8 @@ Cubbie Skill  --POST https://ntfy.sh/<topic>-->  ntfy.sh  <--GET /json?poll=1&si
 
 Set `RELAY_TOPIC` in `.env` to turn it on (empty = relay off; the webhook path keeps
 working either way). Pick a long random name, e.g. `bailout-` plus 16 random letters and
-digits, and save the same name in Cubbie as `BAILOUT_RELAY_TOKEN`. The topic is the
+digits (letters, digits, `-`, `_` only; the bot refuses to start on anything else), and
+save the same name in Cubbie as `BAILOUT_RELAY_TOKEN`. The topic is the
 secret: anyone who knows it can start a bailout as any seeded roommate, so the bot never
 writes it to the log, and polling errors are reported by status or exception class only.
 
@@ -165,6 +166,9 @@ What the bot checks on every relay message (`relay.py`, tested in `test_relay.py
 - **Message events only.** ntfy `open`, `keepalive` and `poll_request` events are ignored.
 - **No repeats.** Each ntfy message id is handled once; the last 1000 ids are remembered,
   and the next poll asks for messages `since=<last id>` so nothing is fetched twice.
+  The first poll after a (re)start only marks what is already in the topic as seen, so a
+  restart never runs a bailout the previous process already ran. A line published during
+  the restart itself is lost rather than risked twice.
 - **Nothing stale.** A message more than 5 minutes old is rejected, so a line that sat in
   ntfy's cache while the bot was down can't start a bailout later.
 - **Same in-flight guard.** A second line for a user whose Cubbie bailout is still running

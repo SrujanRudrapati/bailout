@@ -41,6 +41,9 @@ if not DISCORD_TOKEN:
     raise SystemExit("DISCORD_TOKEN is missing. copy .env.example to .env and fill it in.")
 if BRIDGE_WEBHOOK_ID is not None and not BRIDGE_WEBHOOK_ID.isdigit():
     raise SystemExit("BRIDGE_WEBHOOK_ID must be the numeric id from the webhook URL (or left empty to turn the bridge off).")
+if RELAY_TOPIC is not None and not relay.is_topic_name(RELAY_TOPIC):
+    # the value is not echoed: it is the relay secret
+    raise SystemExit("RELAY_TOPIC must be a bare ntfy topic name (letters, digits, - or _, up to 64), not a URL (or left empty to turn the relay off).")
 
 intents = discord.Intents.default()
 intents.message_content = True  # for !advance and typed DM replies
@@ -294,13 +297,19 @@ async def relay_loop(topic: str) -> None:
 
 
 async def poll_relay_once(session: aiohttp.ClientSession, topic: str, inbox: relay.RelayInbox) -> None:
+    """One poll. Nothing raised here may escape: a dead loop would stop the relay, and a stray traceback could name the topic."""
     try:
         events = await relay.fetch_relay_events(session, topic, inbox.last_id)
+        if not inbox.primed:
+            inbox.prime(events)  # whatever was already there belongs to the previous run of the bot
+            log.info("relay: primed, skipped %d message(s) already in the topic", len(events))
+            return
+        for event in events:
+            handle_relay_event(inbox, event)
     except relay.RelayError as why:
         log.warning("relay: poll failed: %s", relay.scrub(str(why), topic))
-        return
-    for event in events:
-        handle_relay_event(inbox, event)
+    except Exception as exc:  # noqa: BLE001  (class name only, the message could carry the URL)
+        log.warning("relay: poll failed: unexpected %s", type(exc).__name__)
 
 
 def handle_relay_event(inbox: relay.RelayInbox, event: dict) -> None:

@@ -121,6 +121,10 @@ class PollOnceTests(unittest.TestCase):
         bot._bridge_in_flight.clear()
         self.inbox = relay.RelayInbox()
 
+    def primed(self):
+        self.inbox.prime([])
+        return self.inbox
+
     def test_poll_failure_is_logged_without_the_topic_and_does_not_raise(self):
         async def failing(session, topic, last_id):
             raise relay.RelayError("ntfy answered HTTP 429")
@@ -139,8 +143,47 @@ class PollOnceTests(unittest.TestCase):
             return [event(id="a"), event(id="b")]
 
         with mock.patch.object(relay, "fetch_relay_events", two_events), mock.patch.object(bot, "handle_relay_event", lambda inbox, e: seen.append(e["id"])):
-            asyncio.run(bot.poll_relay_once(object(), TOPIC, self.inbox))
+            asyncio.run(bot.poll_relay_once(object(), TOPIC, self.primed()))
         self.assertEqual(seen, ["a", "b"])
+
+    def test_first_poll_only_primes_the_inbox_so_a_restart_does_not_replay_a_bailout(self):
+        seen = []
+
+        async def one_event(session, topic, last_id):
+            return [event(id="replayed")]
+
+        with mock.patch.object(relay, "fetch_relay_events", one_event), mock.patch.object(bot, "handle_relay_event", lambda inbox, e: seen.append(e["id"])):
+            asyncio.run(bot.poll_relay_once(object(), TOPIC, self.inbox))
+            asyncio.run(bot.poll_relay_once(object(), TOPIC, self.inbox))
+        self.assertEqual(seen, ["replayed"])  # handled on the second poll only, as a fresh fetch
+        self.assertTrue(self.inbox.primed)
+
+    def test_unexpected_error_in_fetch_is_logged_by_class_only_and_does_not_raise(self):
+        async def exploding(session, topic, last_id):
+            raise ValueError(f"bad body from https://ntfy.sh/{TOPIC}/json")
+
+        with mock.patch.object(relay, "fetch_relay_events", exploding):
+            with self.assertLogs("bailout.bot", level="WARNING") as captured:
+                asyncio.run(bot.poll_relay_once(object(), TOPIC, self.inbox))
+        joined = "\n".join(captured.output)
+        self.assertIn("ValueError", joined)
+        self.assertNotIn(TOPIC, joined)
+
+    def test_unexpected_error_in_the_handler_is_logged_without_the_topic_and_does_not_raise(self):
+        self.inbox.prime([])
+
+        async def one_event(session, topic, last_id):
+            return [event(id="a")]
+
+        def exploding(inbox, e):
+            raise RuntimeError(f"boom {TOPIC}")
+
+        with mock.patch.object(relay, "fetch_relay_events", one_event), mock.patch.object(bot, "handle_relay_event", exploding):
+            with self.assertLogs("bailout.bot", level="WARNING") as captured:
+                asyncio.run(bot.poll_relay_once(object(), TOPIC, self.inbox))
+        joined = "\n".join(captured.output)
+        self.assertIn("RuntimeError", joined)
+        self.assertNotIn(TOPIC, joined)
 
     def test_poll_continues_from_the_inbox_last_id(self):
         asked = []

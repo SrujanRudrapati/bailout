@@ -153,6 +153,56 @@ class FetchTest(unittest.TestCase):
         self.assertNotIn(TOPIC, str(caught.exception))
 
 
+class PrimeTest(unittest.TestCase):
+    def test_fresh_inbox_is_not_primed_until_told(self):
+        inbox = relay.RelayInbox()
+        self.assertFalse(inbox.primed)
+        inbox.prime([event(id="old1"), event(id="old2")])
+        self.assertTrue(inbox.primed)
+        self.assertEqual(inbox.last_id, "old2")
+
+    def test_primed_ids_are_duplicates_afterwards(self):
+        inbox = relay.RelayInbox()
+        inbox.prime([event(id="old1")])
+        with self.assertRaises(BridgeError) as caught:
+            inbox.accept(event(id="old1"), find_user, now=NOW)
+        self.assertIn("duplicate", str(caught.exception))
+        inbox.accept(event(id="new1"), find_user, now=NOW)
+
+    def test_priming_with_nothing_still_counts(self):
+        inbox = relay.RelayInbox()
+        inbox.prime([])
+        self.assertTrue(inbox.primed)
+        self.assertIsNone(inbox.last_id)
+
+
+class TopicNameTest(unittest.TestCase):
+    def test_accepts_letters_digits_dash_underscore_up_to_64(self):
+        for ok in ["bailout-house-k3j9xQ_7", "a", "x" * 64]:
+            with self.subTest(ok=ok):
+                self.assertTrue(relay.is_topic_name(ok))
+
+    def test_rejects_urls_slashes_spaces_and_too_long(self):
+        for bad in ["", "https://ntfy.sh/x", "a/b", "a b", "a?b", "a#b", "é", "x" * 65]:
+            with self.subTest(bad=bad):
+                self.assertFalse(relay.is_topic_name(bad))
+
+
+class FetchDecodeTest(unittest.TestCase):
+    def test_undecodable_body_is_a_relay_error_without_the_topic(self):
+        class BadResponse(FakeResponse):
+            async def text(self):
+                raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, f"bad byte in {TOPIC}")
+
+        class BadSession(FakeSession):
+            def get(self, url, **kwargs):
+                return BadResponse("")
+
+        with self.assertRaises(relay.RelayError) as caught:
+            asyncio.run(relay.fetch_relay_events(BadSession(""), TOPIC, None))
+        self.assertNotIn(TOPIC, str(caught.exception))
+
+
 class ScrubTest(unittest.TestCase):
     def test_scrub_replaces_the_topic(self):
         self.assertEqual(relay.scrub(f"GET https://ntfy.sh/{TOPIC}/json failed", TOPIC), "GET https://ntfy.sh/<topic>/json failed")

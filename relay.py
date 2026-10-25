@@ -10,9 +10,15 @@ status or exception class and anything that might echo it goes through scrub().
 Each message is checked the same way as a webhook line (bridge.parse_bridge_line,
 known user) plus three relay-only rules: it must be a "message" event, its id must
 not have been seen before, and it must be under RELAY_STALE_SECONDS old.
+
+The first poll after a (re)start only primes the inbox: whatever is already in the
+topic is marked seen and not acted on, so a restart never replays a bailout that
+the previous process already ran. A line published during the restart itself is
+lost; that is the price of never running one twice.
 """
 
 import json
+import re
 import time
 from collections import OrderedDict
 from typing import Callable, Optional
@@ -27,10 +33,16 @@ RELAY_STALE_SECONDS = 300
 RELAY_FIRST_SINCE = "60s"
 RELAY_TIMEOUT_SECONDS = 10
 MAX_SEEN_IDS = 1000
+# ntfy topic names: letters, digits, dash, underscore, up to 64. Anything else would change the URL path.
+_TOPIC_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$", re.ASCII)
 
 
 class RelayError(RuntimeError):
     """A poll of the relay failed. str() says why, never the topic."""
+
+
+def is_topic_name(topic: str) -> bool:
+    return bool(_TOPIC_RE.match(topic or ""))
 
 
 def relay_url(topic: str, last_id: Optional[str]) -> str:
@@ -67,8 +79,9 @@ async def fetch_relay_events(session: aiohttp.ClientSession, topic: str, last_id
             text = await response.text()
     except aiohttp.ClientResponseError as exc:
         raise RelayError(f"ntfy answered HTTP {exc.status}") from None
-    except (aiohttp.ClientError, TimeoutError) as exc:
-        raise RelayError(f"could not reach ntfy ({type(exc).__name__})") from None
+    except (aiohttp.ClientError, TimeoutError, ValueError) as exc:
+        # class name only: aiohttp and decode errors can carry the URL, and with it the topic
+        raise RelayError(f"could not reach or read ntfy ({type(exc).__name__})") from None
     return parse_relay_feed(text)
 
 
@@ -79,6 +92,15 @@ class RelayInbox:
         self._seen: OrderedDict[str, None] = OrderedDict()
         self._max_seen = max_seen
         self.last_id: Optional[str] = None
+        self.primed = False
+
+    def prime(self, events: list[dict]) -> None:
+        """Mark everything already in the topic as seen without acting on it (first poll after a start)."""
+        for event in events:
+            message_id = event.get("id")
+            if isinstance(message_id, str) and message_id:
+                self._remember(message_id)
+        self.primed = True
 
     def accept(self, event: dict, find_user: Callable[[int], Optional[object]], now: Optional[float] = None) -> BridgeRequest:
         """Gate one ntfy event: message event, new id, fresh, strict line, known user. Raises BridgeError."""
