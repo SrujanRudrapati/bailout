@@ -1,0 +1,7 @@
+[
+  {"name": "CHEM 101 midterm", "type": "exam", "due": "2026-10-21T14:00:00Z", "points": 100},
+  {"name": "HIST 210 reading quiz", "type": "quiz", "due": "2026-10-20T09:00:00Z", "points": 10},
+  {"name": "CS 161 project 2", "type": "assignment", "due": "2026-10-23T23:59:00Z", "points": 150},
+  {"name": "MATH 220 homework 7", "type": "assignment", "due": "2026-10-25T23:59:00Z", "points": 20},
+  {"name": "ENGL 101 essay draft", "type": "assignment", "due": "2026-11-02T23:59:00Z", "points": 50}
+]
