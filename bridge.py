@@ -82,7 +82,7 @@ def accept_bridge_message(
         raise BridgeError(f"webhook {webhook_id} is not the bridge webhook")
     request = parse_bridge_line(content)
     if find_user(request.user_id) is None:
-        raise BridgeError(f"unknown user {request.user_id}, run /seed")
+        raise BridgeError(f"unknown user {request.user_id}, they need to /join")
     return request
 
 

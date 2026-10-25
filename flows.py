@@ -9,10 +9,11 @@ shows exactly what left each agent. That's on purpose.
 """
 
 import logging
+import re
 from typing import Awaitable, Callable, Optional
 
 import store
-from agent import PRIVATE_FIELDS, Agent, busy_band
+from agent import DEFAULT_CAP, PRIVATE_FIELDS, Agent, busy_band
 from market import Bid, payback_order, run_auction, settle
 
 log = logging.getLogger("bailout.flows")
@@ -23,7 +24,10 @@ AskFn = Callable[[int, str], Awaitable[str]]
 PostFn = Callable[[dict], Awaitable[None]]
 
 
-SEED_CAP = 20.0  # high enough that the scripted demo never trips a cap check; /me cap still changes it
+SEED_CAP = DEFAULT_CAP  # a joined player and a seeded one start with the same cap
+MAX_NAME_LEN = 20
+FALLBACK_NAME = "roommate"
+_NAME_CHARS = re.compile(r"[^a-z0-9_-]")
 
 
 BAND_ORDER = {"low": 0, "medium": 1, "high": 2}
@@ -50,6 +54,22 @@ def unfilled_reason(bids: int, requester_band: str, helper_bands: list[str], who
         return "every agent's bid was over its human's limit."
     noun = "agent" if bids == 1 else "agents"
     return f"{bids} {noun} bid, but every human passed."
+
+
+def player_name(display_name: str, taken: set[str]) -> str:
+    """A safe, unique, lowercase agent name from a Discord display name.
+
+    Letters, digits, - and _ only (so a name can't carry a ping or a number trick onto the
+    floor), spaces become dashes, 20 characters at most, and -2, -3... when the name is taken.
+    """
+    base = _NAME_CHARS.sub("", "-".join(display_name.strip().lower().split()))[:MAX_NAME_LEN].strip("-_") or FALLBACK_NAME
+    reserved = taken | {AUCTION}
+    if base not in reserved:
+        return base
+    suffix = 2
+    while f"{base}-{suffix}" in reserved:
+        suffix += 1
+    return f"{base}-{suffix}"
 
 
 def seed_profiles(ids: dict[str, int]) -> list[Agent]:
@@ -117,7 +137,12 @@ class Hub:
         self._commit({**self.state, "agents": agents, "ledger": ledger})
 
     def seed(self, ids: dict[str, int]) -> list[Agent]:
-        agents = seed_profiles(ids)
+        """Load the three demo roommates. Anyone who /join-ed stays; every balance goes back to zero."""
+        demo = seed_profiles(ids)
+        demo_ids = {a.discord_id for a in demo}
+        demo_names = {a.name for a in demo}
+        kept = [a for a in self.agents() if a.discord_id not in demo_ids and a.name not in demo_names]
+        agents = [*demo, *kept]
         self._commit(
             {
                 **self.state,
@@ -127,7 +152,19 @@ class Hub:
                 "shared_log": {"round": 0, "entries": []},
             }
         )
-        return agents
+        return demo
+
+    def join(self, discord_id: int, display_name: str) -> tuple[Agent, bool]:
+        """Give a server member their own agent with the defaults. Returns (agent, created).
+
+        Defaults: busy 5, every chore at dislike 5, cap 20, balance 0. The human tunes them with /me.
+        """
+        existing = self.agent_for_user(discord_id)
+        if existing is not None:
+            return existing, False
+        agent = Agent(name=player_name(display_name, set(self.state["agents"])), discord_id=discord_id, cap=DEFAULT_CAP)
+        self.save_agent(agent)
+        return agent, True
 
     # ------------------------------------------------------------ shared log
 
@@ -158,7 +195,7 @@ class Hub:
     def ledger_report(self) -> str:
         ledger = self.state["ledger"]
         if not ledger:
-            return "ledger is empty. run /seed."
+            return "ledger is empty. nobody has joined yet: /join, or /seed for the demo."
         rows = [f"- {name}: {bal:+.1f}" for name, bal in sorted(ledger.items(), key=lambda kv: -kv[1])]
         open_rows = [f"- {task}: {o['helper']} for {o['requester']} ({o['price']} credits, pending /done)" for task, o in self.state["open"].items()]
         text = "**ledger** (credits are favors, sums to zero)\n" + "\n".join(rows)
@@ -339,7 +376,7 @@ class Hub:
     async def advance(self, name: str, busy: int) -> str:
         agent = self.agent(name)
         if agent is None:
-            return f"no agent called {name}. run /seed."
+            return f"no agent called {name}. /join first, or /seed for the demo."
         agent = agent.with_busy(busy)
         self.save_agent(agent)
         debtors = payback_order(self.state["ledger"], agent.name, agent.busy)

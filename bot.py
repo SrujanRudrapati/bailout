@@ -1,6 +1,6 @@
 """Bailout - the Discord bot.
 
-Slash commands: /seed, /me busy|dislike|cap, /bailout, /done, /ledger, /shared
+Slash commands: /join, /me busy|dislike|cap, /bailout, /done, /ledger, /shared, /help, /seed (demo)
 Prefix command:  !advance <name> <busy>   (demo: trigger the payback rule)
 Cubbie bridge:   a webhook line in #agent-floor (see bridge.py) starts a bailout with gate 1 skipped
 ntfy relay:      the same line published to an ntfy.sh topic (see relay.py), for when Discord blocks the webhook
@@ -104,10 +104,51 @@ def my_agent(interaction: discord.Interaction):
     return hub.agent_for_user(interaction.user.id)
 
 
+# ---------------------------------------------------------------- /join and /help
+
+JOIN_WELCOME = (
+    "you're in as **{name}**. your agent starts with busy 5, every chore at dislike 5, a cap of 20 credits and a balance of 0.\n"
+    "set `/me busy`, `/me dislike <task>` and `/me cap` so it bids the way you would. "
+    "those numbers stay with your agent: the floor only ever sees your busy band and your bids."
+)
+
+HELP_TEXT = "\n".join(
+    [
+        "**/join** - get your own chore agent (busy 5, every chore at dislike 5, cap 20, balance 0). the reply is private.",
+        "**/me busy** `<1-10>` - how swamped you are. only the band (low / medium / high) ever leaves your agent.",
+        "**/me dislike** `<task> <1-10>` - how much you hate a chore. stays private, sets what your agent bids.",
+        "**/me cap** `<credits>` - the most your agent may bid without DMing you first.",
+        "**/bailout** `<tasks>` - ask the house to cover chores, e.g. `/bailout dishes, trash`. your agent DMs you before asking.",
+        "**/done** `<task> [photo]` - mark a favor finished so the credits settle.",
+        "**/ledger** - who's owed what, and the favors still open.",
+        "**/shared** - exactly what each agent sent to the floor last round, and what stayed private.",
+        "**/seed** `[maya jordan priya]` - demo only: load the three scripted roommates. anyone who /join-ed stays.",
+        "**/help** - this list.",
+        "**!advance** `<name> <busy>` - demo only: set someone's busy and trigger the payback rule.",
+    ]
+)
+
+
+@bot.tree.command(name="join", description="get your own chore agent (busy 5, every chore at 5, cap 20)")
+async def join(interaction: discord.Interaction):
+    agent, created = hub.join(interaction.user.id, interaction.user.display_name)
+    if not created:
+        return await interaction.response.send_message(
+            f"you're already in as **{agent.name}**. `/me busy`, `/me dislike` and `/me cap` tune your agent.", ephemeral=True
+        )
+    log.info("join: user %s is now agent %s", interaction.user.id, agent.name)
+    await interaction.response.send_message(JOIN_WELCOME.format(name=agent.name), ephemeral=True)
+
+
+@bot.tree.command(name="help", description="every Bailout command, one line each")
+async def help_command(interaction: discord.Interaction):
+    await interaction.response.send_message(HELP_TEXT, ephemeral=True)
+
+
 # ---------------------------------------------------------------- /seed
 
 
-@bot.tree.command(name="seed", description="load the three demo roommates")
+@bot.tree.command(name="seed", description="demo: load the three scripted roommates (anyone who joined stays)")
 @app_commands.describe(
     maya="who plays Maya (busy 9); defaults to SEED_MAYA_ID",
     jordan="who plays Jordan (busy 3); defaults to SEED_JORDAN_ID",
@@ -128,7 +169,7 @@ async def seed(
     labels = {name: await seed_label(mentions[name], discord_id) for name, discord_id in ids.items()}
     agents = hub.seed(ids)
     names = ", ".join(f"{a.name} -> {labels[a.name]}" for a in agents)
-    await interaction.followup.send(f"seeded: {names}. ledger reset to zero.")
+    await interaction.followup.send(f"seeded: {names}. everyone's ledger reset to zero.")
 
 
 async def seed_label(mentioned: Optional[discord.User], discord_id: int) -> str:
@@ -152,7 +193,7 @@ me = app_commands.Group(name="me", description="tune your agent's private profil
 async def me_busy(interaction: discord.Interaction, level: app_commands.Range[int, 1, 10]):
     agent = my_agent(interaction)
     if agent is None:
-        return await interaction.response.send_message("you don't have an agent yet. run /seed.", ephemeral=True)
+        return await interaction.response.send_message("you don't have an agent yet. run /join.", ephemeral=True)
     hub.save_agent(agent.with_busy(level))
     await interaction.response.send_message(f"noted, busy = {level}. others only ever see the band.", ephemeral=True)
 
@@ -161,7 +202,7 @@ async def me_busy(interaction: discord.Interaction, level: app_commands.Range[in
 async def me_dislike(interaction: discord.Interaction, task: str, level: app_commands.Range[int, 1, 10]):
     agent = my_agent(interaction)
     if agent is None:
-        return await interaction.response.send_message("you don't have an agent yet. run /seed.", ephemeral=True)
+        return await interaction.response.send_message("you don't have an agent yet. run /join.", ephemeral=True)
     hub.save_agent(agent.with_dislike(task, level))
     await interaction.response.send_message(f"noted, {task.lower()} dislike = {level}. this stays private.", ephemeral=True)
 
@@ -170,7 +211,7 @@ async def me_dislike(interaction: discord.Interaction, task: str, level: app_com
 async def me_cap(interaction: discord.Interaction, credits: app_commands.Range[float, 0.0, 100.0]):
     agent = my_agent(interaction)
     if agent is None:
-        return await interaction.response.send_message("you don't have an agent yet. run /seed.", ephemeral=True)
+        return await interaction.response.send_message("you don't have an agent yet. run /join.", ephemeral=True)
     hub.save_agent(agent.with_cap(credits))
     await interaction.response.send_message(f"noted, cap = {credits}. I'll DM you before bidding above that.", ephemeral=True)
 
@@ -186,7 +227,7 @@ bot.tree.add_command(me)
 async def bailout(interaction: discord.Interaction, tasks: str):
     agent = my_agent(interaction)
     if agent is None:
-        return await interaction.response.send_message("you don't have an agent yet. run /seed.", ephemeral=True)
+        return await interaction.response.send_message("you don't have an agent yet. run /join.", ephemeral=True)
     task_list = tasks.split(",")
     await interaction.response.send_message(f"ok, your agent is DMing you to confirm before it asks anyone.", ephemeral=True)
 
@@ -345,7 +386,7 @@ async def dm_user(discord_id: int, text: str) -> None:
 async def done(interaction: discord.Interaction, task: str, photo: Optional[discord.Attachment] = None):
     agent = my_agent(interaction)
     if agent is None:
-        return await interaction.response.send_message("you don't have an agent yet. run /seed.", ephemeral=True)
+        return await interaction.response.send_message("you don't have an agent yet. run /join.", ephemeral=True)
     await interaction.response.defer()
     if photo is not None:
         verdict = await check_photo(photo, task)

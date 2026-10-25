@@ -12,7 +12,7 @@ from market import cost
 
 DEFAULT_DISLIKE = 5
 DEFAULT_BUSY = 5
-DEFAULT_CAP = 10.0
+DEFAULT_CAP = 20.0  # high enough that the scripted demo never trips a cap check; /me cap changes it
 
 # the fields share() is allowed to return. Kept as a constant so /shared can
 # print it and the test can check nothing else sneaks out.

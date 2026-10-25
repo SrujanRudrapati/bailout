@@ -8,7 +8,7 @@ import os
 import tempfile
 import unittest
 
-from flows import Hub, unfilled_reason
+from flows import Hub, player_name, unfilled_reason
 from market import ledger_sum
 
 IDS = {"maya": 1, "jordan": 2, "priya": 3}
@@ -439,3 +439,90 @@ class CubbieBailoutTests(unittest.TestCase):
         summary = run(self.hub.cubbie_bailout(self.hub.agent("maya"), busy=9, tasks=["dishes"]))
         self.assertIn("already has an open favor", summary)
         self.assertEqual(self.fake.events, [])
+
+
+class JoinTests(unittest.TestCase):
+    """/join: any server member becomes a player with defaults, and the house works at any size."""
+
+    def setUp(self):
+        self.fake = FakeDiscord()
+        self.hub, self.path = make_hub(self.fake)
+
+    def tearDown(self):
+        os.remove(self.path)
+
+    def test_join_creates_an_agent_with_defaults_and_a_zero_balance(self):
+        agent, created = self.hub.join(7, "Sam")
+        self.assertTrue(created)
+        self.assertEqual((agent.name, agent.discord_id, agent.busy, agent.cap), ("sam", 7, 5, 20.0))
+        self.assertEqual(agent.dislikes, {})
+        self.assertEqual(agent.dislike_for("anything"), 5)
+        self.assertEqual(self.hub.balance("sam"), 0.0)
+        self.assertEqual(self.hub.agent_for_user(7).name, "sam")
+
+    def test_joining_twice_keeps_the_existing_agent(self):
+        self.hub.join(7, "Sam")
+        self.hub.save_agent(self.hub.agent("sam").with_busy(9))
+        agent, created = self.hub.join(7, "Sam")
+        self.assertFalse(created)
+        self.assertEqual(agent.busy, 9)
+
+    def test_display_names_become_safe_unique_lowercase_names(self):
+        taken = {"maya", "jordan", "priya"}
+        self.assertEqual(player_name("Sam", taken), "sam")
+        self.assertEqual(player_name("  Alex  Kim ", taken), "alex-kim")
+        self.assertEqual(player_name("Maya", taken), "maya-2")
+        self.assertEqual(player_name("maya", taken | {"maya-2"}), "maya-3")
+        self.assertEqual(player_name("🔥🔥", taken), "roommate")
+        self.assertEqual(player_name("auction", taken), "auction-2")  # the auction's own label is reserved
+        self.assertEqual(len(player_name("x" * 50, taken)), 20)
+
+    def test_seed_keeps_joined_players_and_zeroes_everyone(self):
+        self.hub.join(7, "Sam")
+        run(self.hub.bailout(self.hub.agent("maya"), ["dishes"]))
+        run(self.hub.done(self.hub.agent("jordan"), "dishes"))
+        self.hub.seed(IDS)
+        self.assertEqual(sorted(self.hub.state["agents"]), ["jordan", "maya", "priya", "sam"])
+        self.assertEqual(set(self.hub.state["ledger"].values()), {0.0})
+        self.assertEqual(self.hub.state["open"], {})
+
+    def test_five_players_auction_lowest_cost_wins_and_is_paid_second_lowest(self):
+        self.hub.join(7, "Sam")  # busy 5, dislike 5 -> 7.5
+        self.hub.join(8, "Alex")
+        self.hub.save_agent(self.hub.agent("alex").with_busy(1).with_dislike("dishes", 1))  # 1.1, the cheapest
+        run(self.hub.bailout(self.hub.agent("maya"), ["dishes"]))
+        bids = [e for e in self.fake.events if e["type"] == "bid"]
+        self.assertEqual(sorted(b["name"] for b in bids), ["alex", "jordan", "priya", "sam"])
+        favor = self.hub.open_favor("dishes")
+        self.assertEqual((favor["helper"], favor["price"]), ("alex", 5.2))  # jordan's 5.2 is the second lowest
+
+    def test_payback_with_many_players_goes_to_the_biggest_debtor(self):
+        self.hub.join(7, "Sam")
+        self.hub.join(8, "Alex")
+        self.hub.save_agent(self.hub.agent("alex").with_busy(1).with_dislike("dishes", 1).with_dislike("trash", 1))
+        run(self.hub.bailout(self.hub.agent("maya"), ["dishes"]))  # alex helps maya for 5.2
+        run(self.hub.bailout(self.hub.agent("sam"), ["trash"]))  # alex helps sam for jordan's 2.6
+        run(self.hub.done(self.hub.agent("alex"), "dishes"))
+        run(self.hub.done(self.hub.agent("alex"), "trash"))
+        self.fake.events.clear()
+        run(self.hub.advance("alex", 9))
+        self.assertEqual(self.fake.events[0]["debtor"], "maya")
+
+    def test_a_house_of_one_is_told_nobody_else_joined(self):
+        fake = FakeDiscord()
+        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".json")
+        tmp.close()
+        try:
+            hub = Hub(tmp.name, ask=fake.ask, post=fake.post)
+            hub.join(7, "Sam")
+            summary = run(hub.bailout(hub.agent("sam"), ["dishes"]))
+            self.assertEqual(summary, "dishes: nobody could take it this time. nobody else has joined the house yet.")
+            self.assertEqual(fake.events[-1]["reason"], "nobody else has joined the house yet.")
+        finally:
+            os.remove(tmp.name)
+
+    def test_a_joined_player_can_be_the_cubbie_requester(self):
+        self.hub.join(7, "Sam")
+        run(self.hub.cubbie_bailout(self.hub.agent("sam"), busy=9, tasks=["dishes"]))
+        self.assertEqual(self.hub.open_favor("dishes")["requester"], "sam")
+        self.assertEqual(self.hub.agent("sam").busy, 9)

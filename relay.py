@@ -120,7 +120,7 @@ class RelayInbox:
             raise BridgeError(f"stale, sent {int(age)}s ago")
         request = parse_bridge_line(str(event.get("message", "")))
         if find_user(request.user_id) is None:
-            raise BridgeError(f"unknown user {request.user_id}, run /seed")
+            raise BridgeError(f"unknown user {request.user_id}, they need to /join")
         return request
 
     def _remember(self, message_id: str) -> None:
