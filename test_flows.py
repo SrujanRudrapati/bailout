@@ -159,3 +159,34 @@ class DoneAndPaybackTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class GuardTests(unittest.TestCase):
+    def setUp(self):
+        self.fake = FakeDiscord()
+        self.hub, self.path = make_hub(self.fake)
+
+    def tearDown(self):
+        os.remove(self.path)
+
+    def test_duplicate_tasks_are_collapsed(self):
+        run(self.hub.bailout(self.hub.agent("maya"), ["dishes", "Dishes", " dishes "]))
+        self.assertEqual(len([e for e in self.fake.events if e["type"] == "result"]), 1)
+
+    def test_task_with_open_favor_is_not_reauctioned(self):
+        run(self.hub.bailout(self.hub.agent("maya"), ["dishes"]))
+        first = self.hub.open_favor("dishes")
+        msg = run(self.hub.bailout(self.hub.agent("priya"), ["dishes"]))
+        self.assertIn("already", msg)
+        self.assertEqual(self.hub.open_favor("dishes"), first)
+
+    def test_payback_with_no_free_task_does_not_overwrite(self):
+        run(self.hub.bailout(self.hub.agent("maya"), ["dishes", "trash", "groceries"]))
+        run(self.hub.done(self.hub.agent("jordan"), "dishes"))
+        before = dict(self.hub.state["open"])
+        # dishes is free again after /done, so this should use dishes; make it busy again first
+        run(self.hub.bailout(self.hub.agent("priya"), ["dishes"]))
+        before = dict(self.hub.state["open"])
+        msg = run(self.hub.advance("jordan", 9))
+        self.assertIn("already has an open favor", msg)
+        self.assertEqual(self.hub.state["open"], before)

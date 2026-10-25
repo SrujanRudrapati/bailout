@@ -35,6 +35,8 @@ if not DISCORD_TOKEN:
 intents = discord.Intents.default()
 intents.message_content = True  # for !advance and typed DM replies
 bot = commands.Bot(command_prefix="!", intents=intents)
+_background: set[asyncio.Task] = set()  # keep references so tasks aren't garbage collected mid-await
+_synced = False
 
 
 # ---------------------------------------------------------------- wiring
@@ -63,6 +65,10 @@ hub = Hub(STATE_PATH, ask=ask, post=post_event)
 
 @bot.event
 async def on_ready():
+    global _synced
+    if _synced:
+        return  # on_ready fires again on reconnects, don't re-sync every time
+    _synced = True
     if GUILD_ID:
         guild = discord.Object(id=int(GUILD_ID))
         bot.tree.copy_global_to(guild=guild)
@@ -137,15 +143,33 @@ async def bailout(interaction: discord.Interaction, tasks: str):
     await interaction.response.send_message(f"ok, your agent is DMing you to confirm before it asks anyone.", ephemeral=True)
 
     async def run():
-        summary = await hub.bailout(agent, task_list)
         try:
-            await interaction.followup.send(summary, ephemeral=True)
-        except discord.HTTPException:
-            # the interaction token only lives 15 min and the DM gates can take a while
-            user = await bot.fetch_user(agent.discord_id)
-            await user.send(summary)
+            summary = await hub.bailout(agent, task_list)
+        except discord.Forbidden:
+            summary = "I couldn't DM someone (DMs closed?) or can't post in the floor channel. nothing was changed."
+            log.exception("bailout failed")
+        except Exception:
+            summary = "something went wrong mid-bailout, check the bot logs."
+            log.exception("bailout failed")
+        await report_back(interaction, agent.discord_id, summary)
 
-    bot.loop.create_task(run())
+    task = bot.loop.create_task(run())
+    _background.add(task)
+    task.add_done_callback(_background.discard)
+
+
+async def report_back(interaction: discord.Interaction, discord_id: int, text: str) -> None:
+    """Ephemeral followup if the interaction is still alive (15 min), else DM, else log."""
+    try:
+        await interaction.followup.send(text, ephemeral=True)
+        return
+    except discord.HTTPException:
+        pass
+    try:
+        user = await bot.fetch_user(discord_id)
+        await user.send(text)
+    except discord.HTTPException:
+        log.error("could not deliver result to %s: %s", discord_id, text)
 
 
 # ---------------------------------------------------------------- /done

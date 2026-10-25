@@ -120,8 +120,12 @@ class Hub:
     # ------------------------------------------------------------ /bailout
 
     async def bailout(self, requester: Agent, tasks: list[str]) -> str:
-        tasks = [t.strip().lower() for t in tasks if t.strip()]
+        tasks = list(dict.fromkeys(t.strip().lower() for t in tasks if t.strip()))  # dedupe, keep order
+        already_open = [t for t in tasks if t in self.state["open"]]
+        tasks = [t for t in tasks if t not in already_open]
         if not tasks:
+            if already_open:
+                return f"{', '.join(already_open)} already has an open favor. /done it first."
             return "which tasks? e.g. /bailout dishes, trash"
 
         # gate 1: does the human actually want to ask?
@@ -135,7 +139,7 @@ class Hub:
             {"type": "request", "name": requester.name, "busy_band": busy_band(requester.busy), "tasks": tasks},
         )
 
-        results = []
+        results = [f"skipped {t}, already has an open favor" for t in already_open]
         for task in tasks:
             results.append(await self._auction_task(requester, task))
         return "\n".join(results)
@@ -165,7 +169,8 @@ class Hub:
             f"my bid for **{task}** would be {helper.bid(task)} credits, over your cap of {helper.cap}. bid anyway? ✅/❌ (or reply 'cap 7' to raise the cap)",
         )
         if answer.startswith("CAP "):
-            helper = helper.with_cap(float(answer.split()[1]))
+            # re-read in case the human changed busy/dislike while we waited on the DM
+            helper = (self.agent(helper.name) or helper).with_cap(float(answer.split()[1]))
             self.save_agent(helper)
             return helper if not helper.bid_exceeds_cap(task) else None
         return helper if answer == "YES" else None
@@ -241,7 +246,9 @@ class Hub:
             return f"{debtor.name} passed on paying back right now. ({a2})"
 
         # debtor's agent offers the task it dislikes least (private reasoning, only the pick is shared)
-        free_tasks = [t for t in TASKS if t not in self.state["open"]] or list(TASKS)
+        free_tasks = [t for t in TASKS if t not in self.state["open"]]
+        if not free_tasks:
+            return f"every task already has an open favor. /done something first, then try again."
         task = min(free_tasks, key=debtor.bid)
         price = debtor.bid(task)
         self._open_favor(task, creditor.name, debtor.name, price)
