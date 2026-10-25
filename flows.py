@@ -27,6 +27,9 @@ SEED_CAP = 20.0  # high enough that the scripted demo never trips a cap check; /
 
 
 BAND_ORDER = {"low": 0, "medium": 1, "high": 2}
+# the shared-log sender for lines the auction posts on nobody's behalf. These never carry a roommate's name:
+# the floor hears "one agent passed", and only the requester's own DM hears who.
+AUCTION = "auction"
 
 
 def unfilled_reason(bids: int, requester_band: str, helper_bands: list[str], who: str) -> str:
@@ -61,6 +64,21 @@ def seed_profiles(ids: dict[str, int]) -> list[Agent]:
 def _capitalized(name: str) -> str:
     """Upper-case only the first letter, leaving the rest as the roommate spelled it."""
     return name[:1].upper() + name[1:]
+
+
+def _joined(names: list[str]) -> str:
+    return names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1]
+
+
+def moved_on(sat_out: list[str], declined: list[str]) -> str:
+    """Who passed on the way to a result, for the requester's own DM only. Empty when nobody did."""
+    parts = []
+    if declined:
+        parts.append(f"{_joined(declined)} passed")
+    if sat_out:
+        noun = "agent" if len(sat_out) == 1 else "agents"
+        parts.append(f"{_joined([f"{name}'s" for name in sat_out])} {noun} sat out")
+    return ", ".join(parts)
 
 
 class Hub:
@@ -207,31 +225,33 @@ class Hub:
             log.exception("auction for %s (asked by %s) failed, moving on to the next task", task, requester.name)
             return f"{task}: something went wrong mid-auction, check the bot logs. the other tasks still ran."
 
-    async def _collect_bids(self, requester: Agent, task: str) -> list[Bid]:
-        bids = []
+    async def _collect_bids(self, requester: Agent, task: str) -> tuple[list[Bid], list[str]]:
+        """(bids, names of helpers whose agent sat out at the cap check)."""
+        bids, sat_out = [], []
         for helper in self.agents():
             if helper.name == requester.name:
                 continue
-            helper = await self._check_cap(helper, task)
-            if helper is None:
+            bidder = await self._check_cap(helper, task)
+            if bidder is None:
+                sat_out.append(helper.name)
                 continue
-            shared = helper.share([task], self.balance(helper.name))
+            shared = bidder.share([task], self.balance(bidder.name))
             await self._post_and_log(
-                helper.name,
+                bidder.name,
                 {"type": "bid", "name": shared["name"], "task": task, "bid": shared["bids"][task], "busy_band": shared["busy_band"]},
             )
             bids.append(Bid(name=shared["name"], cost=shared["bids"][task], balance=shared["ledger_balance"]))
-        return bids
+        return bids, sat_out
 
     async def _check_cap(self, helper: Agent, task: str) -> Optional[Agent]:
         """If the bid would be over the human's cap, ask before bidding. Returns None to sit out.
 
-        The floor is told the agent is checking with its human (so the auction never
-        looks stuck), and a timeout, a decline, or an unreadable answer is a pass.
+        The floor is told an agent is checking with its human (so the auction never looks
+        stuck) but not which one, and a timeout, a decline, or an unreadable answer is a pass.
         """
         if not helper.bid_exceeds_cap(task):
             return helper
-        await self._post_and_log(helper.name, {"type": "cap_check", "name": helper.name, "task": task})
+        await self._post_and_log(AUCTION, {"type": "cap_check", "task": task})
         answer = await self.ask(
             helper.discord_id,
             f"my bid for **{task}** would be {helper.bid(task)} credits, over your cap of {helper.cap}. bid anyway? ✅/❌ (or reply 'cap 7' to raise the cap)",
@@ -246,12 +266,12 @@ class Hub:
             bidding = answer == "YES"
         if bidding:
             return helper
-        await self._post_and_log(helper.name, {"type": "passed", "name": helper.name, "task": task})
+        await self._post_and_log(AUCTION, {"type": "passed", "task": task})
         return None
 
     async def _auction_task(self, requester: Agent, task: str) -> str:
-        bids = await self._collect_bids(requester, task)
-        remaining = bids
+        bids, sat_out = await self._collect_bids(requester, task)
+        remaining, declined = bids, []
         while remaining:
             result = run_auction(remaining)
             winner = self.agent(result.winner)
@@ -262,13 +282,18 @@ class Hub:
                 await self._post_and_log(
                     winner.name, {"type": "awarded", "name": winner.name, "task": task, "price": result.price}
                 )
+                moved = moved_on(sat_out, declined)
+                if moved:
+                    return f"{task}: {moved}, so {winner.name} has it for {result.price} credits (settles on /done {task})"
                 return f"{task}: {winner.name} for {result.price} credits (settles on /done {task})"
-            await self._post_and_log(winner.name, {"type": "declined", "name": winner.name, "task": task})
+            # the floor hears that one agent passed and whether the auction goes on, never who
+            declined = [*declined, winner.name]
             remaining = [b for b in remaining if b.name != winner.name]
-        return await self._unfilled(requester, task, len(bids))
+            await self._post_and_log(AUCTION, {"type": "declined", "task": task, "next": bool(remaining)})
+        return await self._unfilled(requester, task, len(bids), sat_out, declined)
 
-    async def _unfilled(self, requester: Agent, task: str, bid_count: int) -> str:
-        """One floor line saying the task has no taker and why, then the same reason for the requester's DM.
+    async def _unfilled(self, requester: Agent, task: str, bid_count: int, sat_out: list[str], declined: list[str]) -> str:
+        """One floor line saying the task has no taker and why, then the same reason (plus who passed) for the requester's DM.
 
         The reason is chosen here, in plain code, and the floor line only restates it.
         """
@@ -279,7 +304,9 @@ class Hub:
         await self._post_and_log(
             requester.name, {"type": "unfilled", "name": requester.name, "task": task, "bids": bid_count, "reason": floor_reason}
         )
-        return f"{task}: nobody could take it this time. {unfilled_reason(bid_count, band, helper_bands, 'you')}"
+        moved = moved_on(sat_out, declined)
+        summary = f"{task}: nobody could take it this time. {unfilled_reason(bid_count, band, helper_bands, 'you')}"
+        return f"{summary} {moved}." if moved else summary
 
     def _open_favor(self, task: str, requester: str, helper: str, price: float) -> None:
         new_open = {**self.state["open"], task: {"requester": requester, "helper": helper, "price": price}}
@@ -334,7 +361,7 @@ class Hub:
             return f"{creditor.name} didn't want to call it in. ({a1})"
         a2 = await self.ask(debtor.discord_id, f"**{creditor.name}** is swamped and you owe {owed} credits. let your agent offer to take a task back? ✅/❌")
         if a2 != "YES":
-            await self._post_and_log(debtor.name, {"type": "declined", "name": debtor.name, "task": "payback"})
+            await self._post_and_log(AUCTION, {"type": "declined", "task": "payback", "next": False})
             return f"{debtor.name} passed on paying back right now. ({a2})"
 
         # debtor's agent offers the task it dislikes least (private reasoning, only the pick is shared)

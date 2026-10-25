@@ -84,6 +84,26 @@ class BailoutTests(unittest.TestCase):
         self.assertEqual(favor["price"], 9.0)
         self.assertIn("declined", [e["type"] for e in self.fake.events])
 
+    def test_floor_never_names_who_declined_but_the_requester_dm_does(self):
+        self.fake.answers = {2: ["NO"]}  # jordan says no at gate 2
+        summary = run(self.hub.bailout(self.hub.agent("maya"), ["dishes"]))
+        declined = [e for e in self.fake.events if e["type"] == "declined"]
+        self.assertEqual(declined, [{"type": "declined", "task": "dishes", "next": True}])
+        # the shared log attributes the line to the auction, not to anyone's agent
+        logged = [e for e in self.hub.state["shared_log"]["entries"] if e["sent"]["type"] == "declined"]
+        self.assertEqual([e["agent"] for e in logged], ["auction"])
+        report_lines = [line for line in self.hub.shared_report().splitlines() if "(declined)" in line]
+        self.assertEqual(report_lines, ["- auction (declined): task=dishes, next=True"])
+        # only maya's own summary says the task moved on, and from whom
+        self.assertEqual(summary, "dishes: jordan passed, so priya has it for 9.0 credits (settles on /done dishes)")
+
+    def test_last_decline_says_nobody_is_next(self):
+        self.fake.answers = {2: ["NO"], 3: ["NO"]}
+        summary = run(self.hub.bailout(self.hub.agent("maya"), ["dishes"]))
+        declined = [e for e in self.fake.events if e["type"] == "declined"]
+        self.assertEqual(declined[-1], {"type": "declined", "task": "dishes", "next": False})
+        self.assertTrue(summary.endswith("jordan and priya passed."), summary)
+
     def test_cap_dm_fires_when_bid_exceeds_cap(self):
         priya = self.hub.agent("priya").with_cap(5.0)
         self.hub.save_agent(priya)
@@ -181,7 +201,7 @@ class DoneAndPaybackTests(unittest.TestCase):
         self.fake.events.clear()
         msg = run(self.hub.advance("jordan", 9))
         self.assertIn("passed", msg)
-        self.assertEqual([e["type"] for e in self.fake.events], ["payback_request", "declined"])
+        self.assertEqual(self.fake.events[1:], [{"type": "declined", "task": "payback", "next": False}])
         self.assertEqual([f["helper"] for f in self.hub.state["open"].values()], [])
 
 
@@ -202,7 +222,7 @@ class UnfilledTaskTests(unittest.TestCase):
             self.fake.events[-1],
             {"type": "unfilled", "name": "maya", "task": "dishes", "bids": 2, "reason": "2 agents bid, but every human passed."},
         )
-        self.assertEqual(summary, "dishes: nobody could take it this time. 2 agents bid, but every human passed.")
+        self.assertEqual(summary, "dishes: nobody could take it this time. 2 agents bid, but every human passed. jordan and priya passed.")
 
     def _nobody_bids(self):
         # both helpers' agents sit out: bids over a tiny cap, humans say no to bidding anyway
@@ -218,7 +238,7 @@ class UnfilledTaskTests(unittest.TestCase):
             self.fake.events[-1],
             {"type": "unfilled", "name": "maya", "task": "dishes", "bids": 0, "reason": "nobody's less busy than Maya this week."},
         )
-        self.assertEqual(summary, "dishes: nobody could take it this time. nobody's less busy than you this week.")
+        self.assertEqual(summary, "dishes: nobody could take it this time. nobody's less busy than you this week. jordan's and priya's agents sat out.")
         self.assertNotRegex(str(self.fake.events[-1]["reason"]), r"\d")
 
     def test_no_bids_but_someone_less_busy_blames_the_caps(self):
@@ -229,7 +249,7 @@ class UnfilledTaskTests(unittest.TestCase):
             self.fake.events[-1],
             {"type": "unfilled", "name": "maya", "task": "dishes", "bids": 0, "reason": "every agent's bid was over its human's limit."},
         )
-        self.assertEqual(summary, "dishes: nobody could take it this time. every agent's bid was over its human's limit.")
+        self.assertEqual(summary, "dishes: nobody could take it this time. every agent's bid was over its human's limit. jordan's and priya's agents sat out.")
 
     def test_unfilled_line_never_carries_a_busy_number(self):
         self.fake.answers = {2: ["NO"], 3: ["NO"]}
@@ -322,7 +342,7 @@ class CapCheckTests(unittest.TestCase):
         self.hub.save_agent(self.hub.agent("priya").with_cap(5.0))
         run(self.hub.bailout(self.hub.agent("maya"), ["dishes"]))
         checks = [e for e in self.fake.events if e["type"] == "cap_check"]
-        self.assertEqual(checks, [{"type": "cap_check", "name": "priya", "task": "dishes"}])
+        self.assertEqual(checks, [{"type": "cap_check", "task": "dishes"}])
         # posted before priya's own bid, i.e. while her agent was still waiting on the DM
         types = [e["type"] for e in self.fake.events]
         priya_bid = next(i for i, e in enumerate(self.fake.events) if e["type"] == "bid" and e["name"] == "priya")
@@ -331,24 +351,26 @@ class CapCheckTests(unittest.TestCase):
     def test_cap_declined_posts_passed_and_auction_continues(self):
         self.hub.save_agent(self.hub.agent("priya").with_cap(5.0))
         self.fake.answers = {3: ["NO"]}  # gates.py also returns NO on timeout
-        run(self.hub.bailout(self.hub.agent("maya"), ["dishes"]))
-        self.assertIn({"type": "passed", "name": "priya", "task": "dishes"}, self.fake.events)
+        summary = run(self.hub.bailout(self.hub.agent("maya"), ["dishes"]))
+        self.assertIn({"type": "passed", "task": "dishes"}, self.fake.events)
         self.assertNotIn("priya", [e["name"] for e in self.fake.events if e["type"] == "bid"])
         favor = self.hub.open_favor("dishes")
         self.assertEqual((favor["helper"], favor["price"]), ("jordan", 5.2))
+        # the floor line has no name in it; maya's own summary says whose agent sat out
+        self.assertEqual(summary, "dishes: priya's agent sat out, so jordan has it for 5.2 credits (settles on /done dishes)")
 
     def test_cap_escalate_is_treated_as_a_pass(self):
         self.hub.save_agent(self.hub.agent("priya").with_cap(5.0))
         self.fake.answers = {3: ["ESCALATE"]}
         run(self.hub.bailout(self.hub.agent("maya"), ["dishes"]))
-        self.assertIn({"type": "passed", "name": "priya", "task": "dishes"}, self.fake.events)
+        self.assertIn({"type": "passed", "task": "dishes"}, self.fake.events)
         self.assertEqual(self.hub.open_favor("dishes")["helper"], "jordan")
 
     def test_cap_raised_but_still_too_low_is_a_pass(self):
         self.hub.save_agent(self.hub.agent("priya").with_cap(5.0))
         self.fake.answers = {3: ["CAP 6"]}  # priya's dishes bid is 9.0
         run(self.hub.bailout(self.hub.agent("maya"), ["dishes"]))
-        self.assertIn({"type": "passed", "name": "priya", "task": "dishes"}, self.fake.events)
+        self.assertIn({"type": "passed", "task": "dishes"}, self.fake.events)
         self.assertEqual(self.hub.agent("priya").cap, 6.0)
 
     def test_cap_accepted_posts_no_pass(self):

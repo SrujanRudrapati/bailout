@@ -20,6 +20,7 @@ import json
 import logging
 import os
 import re
+from typing import Iterable
 
 import anthropic
 
@@ -43,10 +44,16 @@ FLOOR_EVENT_TYPES = {
         "Shape: '<Name>'s Cubbie says: swamped this week (busy: <band>). Agents, bids please.'"
     ),
     "bid": "an agent offers to do a task for a number of credits",
-    "cap_check": "the agent's bid is over its human's limit, so it is checking with its human before bidding. nothing decided yet",
-    "passed": "the agent is not bidding on this task (its human declined or didn't answer)",
+    "cap_check": (
+        "an agent's bid is over its human's limit, so it is checking with its human before bidding. nothing decided yet. "
+        "There is no name in the data on purpose: never say or guess which agent"
+    ),
+    "passed": "an agent is sitting this task out (its human did not want it to bid). Never say or guess which agent",
     "awarded": "the winner's human ACCEPTED the task. It is NOT done yet. Do not say finished/done/completed",
-    "declined": "an agent passed on a task",
+    "declined": (
+        "the agent that won the task passed on it. Never say or guess which one: say 'one agent passed'. "
+        "If next is true the next bidder is being asked, so add 'next agent is up'; if false nobody is left"
+    ),
     "unfilled": (
         "nobody is taking the task this round. The data carries the reason, already decided by the code: restate it and "
         "nothing more. Never add a reason of your own, never mention busy levels unless the given reason does, and never "
@@ -66,7 +73,8 @@ FLOOR_SYSTEM = (
     "You are a roommate's personal chore agent posting one line in a shared Discord channel. "
     "You get an event type, what that type means, and the event's JSON data. Write ONE short, "
     "casual line (under 25 words) describing ONLY that event. Capitalize roommates' names "
-    "(Jordan, not jordan). Credits are favors, not money: "
+    "(Jordan, not jordan). An event with no name in its data is anonymous on purpose: never add one. "
+    "Credits are favors, not money: "
     "always say 'credits', never '$', 'dollars', 'paid' or 'money'. Never invent reasons, "
     "schedules, feelings, or numbers that are not in the data. Only use the fields given. "
     "No emojis except at most one. No quotes around the line.\n\nEvent types:\n"
@@ -106,11 +114,12 @@ def _text_of(response) -> str:
 # ---------------------------------------------------------------- floor lines
 
 
-def floor_message(event: dict) -> str:
+def floor_message(event: dict, names: Iterable[str] = ()) -> str:
     """One in-character line for #agent-floor. `event` must only contain share() data.
 
-    The LLM line is validated before it is used; anything that fails falls back
-    to the plain template and is logged.
+    `names` is every roommate's name, so a line about an anonymous event can be checked
+    for naming someone. The LLM line is validated before it is used; anything that fails
+    falls back to the plain template and is logged.
     """
     fallback = _template_line(event)
     client = _client()
@@ -135,7 +144,7 @@ def floor_message(event: dict) -> str:
         return fallback
     lines = _text_of(response).splitlines()
     line = capitalize_names(lines[0].strip() if lines else "", event)
-    if not validate_line(line, event):
+    if not validate_line(line, event, names):
         log.warning("floor line failed validation for %s event, using template: %r", event.get("type"), line)
         return fallback
     return line
@@ -156,19 +165,24 @@ _COMPLETION_WORDS = re.compile(r"\b(finish|finished|done|complete|completed)\b",
 # the code picks the reason a task went unfilled; busy wording the reason doesn't contain is invented
 _BUSY_WORDS = re.compile(r"\b(busy|busier|busiest|swamped|free)\b", re.IGNORECASE)
 _NUMBER_RE = re.compile(r"\d+(?:\.\d+)?")
+# events the floor hears without a name: who declined is the requester's business, not the house's
+_ANONYMOUS_EVENTS = ("cap_check", "passed", "declined")
 
 
-def validate_line(line: str, event: dict) -> bool:
+def validate_line(line: str, event: dict, names: Iterable[str] = ()) -> bool:
     """True if an LLM floor line is safe to post for `event`.
 
     Rejects money wording, any number not present in the event data,
     completion wording on an `awarded` event (accepted != finished),
-    demand wording on a `payback_request` (it is an offer, not a bill), and
-    busy wording on an `unfilled` event unless the reason the code chose is about busy.
+    demand wording on a `payback_request` (it is an offer, not a bill),
+    busy wording on an `unfilled` event unless the reason the code chose is about busy,
+    and any roommate's name on an anonymous event (`cap_check`, `passed`, `declined`).
     """
     if not line.strip() or "\n" in line:
         return False
     lowered = line.lower()
+    if event.get("type") in _ANONYMOUS_EVENTS and any(re.search(rf"\b{re.escape(n.lower())}\b", lowered) for n in names):
+        return False
     if any(word in lowered for word in _FORBIDDEN_WORDS):
         return False
     allowed = _numbers_in(event)
@@ -214,13 +228,13 @@ def _template_line(event: dict) -> str:
     if kind == "bid":
         return f"{who} can do {task} for {event.get('bid')} credits (busy: {event.get('busy_band')})."
     if kind == "cap_check":
-        return f"{who}'s agent is checking with them before bidding on {task}."
+        return f"an agent is checking with its human before bidding on {task}."
     if kind == "passed":
-        return f"{who}'s agent passed on {task}."
+        return f"one agent is sitting out {task}."
     if kind == "awarded":
         return f"{who}'s taking {task} for {price} credits."
     if kind == "declined":
-        return f"{who} is passing on {task}, asking the next bidder."
+        return f"one agent passed on {task}. next agent is up." if event.get("next") else f"one agent passed on {task}."
     if kind == "unfilled":
         return capitalize_names(f"nobody's taking {task} for {who} this time: {event.get('reason', 'no agent bid.')}", event)
     if kind == "completed":

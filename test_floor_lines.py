@@ -61,13 +61,27 @@ class TemplateTests(unittest.TestCase):
         event = {"type": "cubbie_request", "name": "maya", "busy_band": "high", "tasks": ["dishes"]}
         self.assertFalse(validate_line("Maya's Cubbie says: swamped this week (busy: 9). Agents, bids please.", event))
 
-    def test_cap_check_template_says_the_agent_is_checking(self):
-        event = {"type": "cap_check", "name": "priya", "task": "trash"}
-        self.assertEqual(_template_line(event), "Priya's agent is checking with them before bidding on trash.")
+    def test_cap_check_template_names_nobody(self):
+        event = {"type": "cap_check", "task": "trash"}
+        self.assertEqual(_template_line(event), "an agent is checking with its human before bidding on trash.")
 
-    def test_passed_template(self):
-        event = {"type": "passed", "name": "priya", "task": "trash"}
-        self.assertEqual(_template_line(event), "Priya's agent passed on trash.")
+    def test_passed_template_names_nobody(self):
+        event = {"type": "passed", "task": "trash"}
+        self.assertEqual(_template_line(event), "one agent is sitting out trash.")
+
+    def test_declined_template_says_next_agent_is_up(self):
+        self.assertEqual(_template_line({"type": "declined", "task": "dishes", "next": True}), "one agent passed on dishes. next agent is up.")
+        self.assertEqual(_template_line({"type": "declined", "task": "dishes", "next": False}), "one agent passed on dishes.")
+        self.assertEqual(_template_line({"type": "declined", "task": "payback", "next": False}), "one agent passed on payback.")
+
+    def test_anonymous_events_reject_a_line_that_names_a_roommate(self):
+        names = ["maya", "jordan", "priya"]
+        for event in ({"type": "declined", "task": "dishes", "next": True}, {"type": "passed", "task": "dishes"}, {"type": "cap_check", "task": "dishes"}):
+            self.assertFalse(validate_line("Jordan passed on dishes.", event, names), event["type"])
+            self.assertFalse(validate_line("jordan's agent is checking.", event, names), event["type"])
+            self.assertTrue(validate_line("one agent passed on dishes.", event, names), event["type"])
+        # a named event may of course name its own roommate
+        self.assertTrue(validate_line("Jordan's taking dishes for 9.0 credits.", AWARDED, names))
 
     def test_awarded_template(self):
         self.assertEqual(_template_line(AWARDED), "Jordan's taking dishes for 9.0 credits.")
@@ -121,10 +135,11 @@ class TemplateTests(unittest.TestCase):
             {"type": "request", "name": "maya", "busy_band": "high", "tasks": ["dishes", "trash"]},
             {"type": "cubbie_request", "name": "maya", "busy_band": "high", "tasks": ["dishes", "trash"]},
             {"type": "bid", "name": "jordan", "task": "dishes", "bid": 5.2, "busy_band": "low"},
-            {"type": "cap_check", "name": "priya", "task": "trash"},
-            {"type": "passed", "name": "priya", "task": "trash"},
+            {"type": "cap_check", "task": "trash"},
+            {"type": "passed", "task": "trash"},
             AWARDED,
-            {"type": "declined", "name": "jordan", "task": "dishes"},
+            {"type": "declined", "task": "dishes", "next": True},
+            {"type": "declined", "task": "dishes", "next": False},
             {"type": "unfilled", "name": "maya", "task": "dishes", "bids": 2, "reason": "2 agents bid, but every human passed."},
             {"type": "unfilled", "name": "maya", "task": "dishes", "bids": 0, "reason": "nobody's less busy than Maya this week."},
             COMPLETED,
@@ -132,7 +147,7 @@ class TemplateTests(unittest.TestCase):
             {"type": "payback_done", "name": "maya", "task": "trash", "price": 5.0, "creditor": "jordan"},
         ]
         for event in events:
-            self.assertTrue(validate_line(_template_line(event), event), event["type"])
+            self.assertTrue(validate_line(_template_line(event), event, ["maya", "jordan", "priya"]), event["type"])
 
 
 class CapitalizedNameTests(unittest.TestCase):
@@ -186,6 +201,14 @@ class FloorMessageValidationTests(unittest.TestCase):
     def test_llm_line_gets_its_names_capitalized(self):
         with mock.patch("llm._client", return_value=self._fake_client("jordan's on dishes for 9.0 credits.")):
             self.assertEqual(floor_message(AWARDED), "Jordan's on dishes for 9.0 credits.")
+
+    @mock.patch.dict(os.environ, {"ANTHROPIC_API_KEY": "x"})
+    def test_llm_line_naming_who_declined_falls_back_to_the_template(self):
+        event = {"type": "declined", "task": "dishes", "next": True}
+        with mock.patch("llm._client", return_value=self._fake_client("Jordan passed on dishes, Priya is up.")):
+            with self.assertLogs("bailout.llm", level="WARNING"):
+                line = floor_message(event, names=["maya", "jordan", "priya"])
+        self.assertEqual(line, "one agent passed on dishes. next agent is up.")
 
     @mock.patch.dict(os.environ, {"ANTHROPIC_API_KEY": "x"})
     def test_llm_is_told_the_event_type(self):

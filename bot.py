@@ -70,7 +70,8 @@ async def post_event(event: dict) -> None:
     if channel is None:
         log.warning("no #%s channel, event not posted: %s", FLOOR_CHANNEL, event)
         return
-    line = await asyncio.to_thread(floor_message, event)
+    names = [agent.name for agent in hub.agents()]  # so a line about an anonymous event can be checked for naming someone
+    line = await asyncio.to_thread(floor_message, event, names)
     await channel.send(line, allowed_mentions=NO_MENTIONS)
 
 
@@ -390,9 +391,13 @@ async def shared(interaction: discord.Interaction):
 
 @bot.command(name="advance", help="demo: !advance jordan 9 sets busy and triggers payback")
 async def advance(ctx: commands.Context, name: str, busy: int):
-    await ctx.send(f"setting {name}'s busy to {busy}...")
+    agent = hub.agent(name)
+    if agent is None:
+        return await ctx.send(f"no agent called {name}. /join first, or /seed for the demo.")
+    # the result can say who passed on paying back, so it goes to the creditor's DM, not the channel
+    await ctx.send(f"setting {name}'s busy to {busy}... the result goes to their DMs.")
     summary = await hub.advance(name, busy)
-    await ctx.send(summary)
+    await dm_user(agent.discord_id, summary)
 
 
 if __name__ == "__main__":
