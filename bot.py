@@ -19,6 +19,7 @@ from dotenv import load_dotenv
 from flows import Hub
 from gates import ask_by_dm
 from llm import floor_message, verify_photo
+from seed_ids import SEED_ENV_VARS, resolve_seed_ids
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
@@ -86,12 +87,38 @@ def my_agent(interaction: discord.Interaction):
 
 
 @bot.tree.command(name="seed", description="load the three demo roommates")
-@app_commands.describe(maya="who plays Maya (busy 9)", jordan="who plays Jordan (busy 3)", priya="who plays Priya (busy 5)")
-async def seed(interaction: discord.Interaction, maya: discord.User, jordan: discord.User, priya: discord.User):
-    agents = hub.seed({"maya": maya.id, "jordan": jordan.id, "priya": priya.id})
-    players = {maya.id: maya, jordan.id: jordan, priya.id: priya}
-    names = ", ".join(f"{a.name} -> {players[a.discord_id].display_name}" for a in agents)
-    await interaction.response.send_message(f"seeded: {names}. ledger reset to zero.")
+@app_commands.describe(
+    maya="who plays Maya (busy 9); defaults to SEED_MAYA_ID",
+    jordan="who plays Jordan (busy 3); defaults to SEED_JORDAN_ID",
+    priya="who plays Priya (busy 5); defaults to SEED_PRIYA_ID",
+)
+async def seed(
+    interaction: discord.Interaction,
+    maya: Optional[discord.User] = None,
+    jordan: Optional[discord.User] = None,
+    priya: Optional[discord.User] = None,
+):
+    mentions = {"maya": maya, "jordan": jordan, "priya": priya}
+    ids, missing = resolve_seed_ids({name: user.id if user else None for name, user in mentions.items()}, os.environ)
+    if missing:
+        hint = ", ".join(f"{name} (or set {SEED_ENV_VARS[name]})" for name in missing)
+        return await interaction.response.send_message(f"/seed needs: {hint}.", ephemeral=True)
+    await interaction.response.defer()
+    labels = {name: await seed_label(mentions[name], discord_id) for name, discord_id in ids.items()}
+    agents = hub.seed(ids)
+    names = ", ".join(f"{a.name} -> {labels[a.name]}" for a in agents)
+    await interaction.followup.send(f"seeded: {names}. ledger reset to zero.")
+
+
+async def seed_label(mentioned: Optional[discord.User], discord_id: int) -> str:
+    """Display name for a seeded player, looked up by id when it came from env."""
+    if mentioned is not None:
+        return mentioned.display_name
+    try:
+        return (await bot.fetch_user(discord_id)).display_name
+    except discord.DiscordException as exc:
+        log.warning("could not fetch user %s for /seed label: %s", discord_id, exc)
+        return str(discord_id)
 
 
 # ---------------------------------------------------------------- /me

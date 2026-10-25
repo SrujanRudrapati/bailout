@@ -73,6 +73,7 @@ Three people (or three accounts) in the server. Everyone has DMs from the bot op
 
 ```
 /seed maya:@A jordan:@B priya:@C        # loads the three profiles, ledger at zero
+                                         # (or just /seed, if SEED_*_ID are set in .env)
 /ledger                                  # everyone at 0.0
 ```
 As Maya (busy 9, two midterms):
