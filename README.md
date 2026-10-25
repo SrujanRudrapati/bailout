@@ -143,26 +143,64 @@ channel. The Cubbie Skill keeps the full URL (the token part is its secret). Who
 that URL can start a bailout as any seeded roommate, so treat it like a password; the
 `user=` field is trusted because the webhook is, not on its own.
 
+### The ntfy relay (when the webhook is blocked)
+
+Discord refuses webhook posts coming from Cubbie's servers, so the Skill does not post
+to Discord at all. It publishes the same one line as plain text to a topic on
+[ntfy.sh](https://ntfy.sh), and the bot polls that topic:
+
+```
+Cubbie Skill  --POST https://ntfy.sh/<topic>-->  ntfy.sh  <--GET /json?poll=1&since=<last id>--  bot (every 3s)
+```
+
+Set `RELAY_TOPIC` in `.env` to turn it on (empty = relay off; the webhook path keeps
+working either way). Pick a long random name, e.g. `bailout-` plus 16 random letters and
+digits, and save the same name in Cubbie as `BAILOUT_RELAY_TOKEN`. The topic is the
+secret: anyone who knows it can start a bailout as any seeded roommate, so the bot never
+writes it to the log, and polling errors are reported by status or exception class only.
+
+What the bot checks on every relay message (`relay.py`, tested in `test_relay.py` and
+`test_bot_relay.py`), on top of the strict parse and known-user rules above:
+
+- **Message events only.** ntfy `open`, `keepalive` and `poll_request` events are ignored.
+- **No repeats.** Each ntfy message id is handled once; the last 1000 ids are remembered,
+  and the next poll asks for messages `since=<last id>` so nothing is fetched twice.
+- **Nothing stale.** A message more than 5 minutes old is rejected, so a line that sat in
+  ntfy's cache while the bot was down can't start a bailout later.
+- **Same in-flight guard.** A second line for a user whose Cubbie bailout is still running
+  is rejected, whichever path it came in on.
+
+Every message is logged as `relay: received`, then `relay: parsed` or `relay: rejected`
+with the reason, never the topic.
+
 ### Cubbie demo script (30 seconds)
 
-Same three seeded players as above. From a terminal, play the Cubbie Skill:
+Same three seeded players as above. From a terminal, play the Cubbie Skill through the
+relay (or run `bailout-link/scripts/post.py`, which does exactly this):
 
 ```
-export HOOK="https://discord.com/api/webhooks/<ID>/<token>"   # the bridge webhook
-curl -s -H 'Content-Type: application/json' -d \
-  '{"content": "bailout_request user=<MAYA_DISCORD_ID> busy=9 tasks=dishes,trash source=cubbie"}' "$HOOK"
+export TOPIC="<the RELAY_TOPIC from .env>"
+curl -s -d 'bailout_request user=<MAYA_DISCORD_ID> busy=9 tasks=dishes,trash source=cubbie' "https://ntfy.sh/$TOPIC"
 ```
-- The raw line appears in `#agent-floor` for a blink and is deleted.
+- Within 3 seconds the bot log says `relay: received`, then `relay: parsed`.
 - Maya gets **no** gate 1 DM. The floor says "Maya's Cubbie says: swamped this week (busy: high). Agents, bids on dishes, trash please." Only "high", never "9".
 - Jordan's and Priya's agents bid, Jordan gets the gate 2 DM for dishes, same as a `/bailout`.
 - Maya gets a DM with the result. `/shared` shows the `cubbie_request` event and that only the band left her agent.
 
-Now show the rejections (watch the bot log, nothing happens on the floor):
+Now show the rejections (watch the bot log for `relay: rejected`, nothing happens on the floor):
 ```
-curl -s -H 'Content-Type: application/json' -d '{"content": "bailout_request user=<MAYA_DISCORD_ID> busy=42 tasks=dishes source=cubbie"}' "$HOOK"   # bad busy
-curl -s -H 'Content-Type: application/json' -d '{"content": "bailout_request user=1 busy=9 tasks=dishes source=cubbie"}' "$HOOK"                   # unknown user
-curl -s -H 'Content-Type: application/json' -d '{"content": "bailout_request user=<MAYA_DISCORD_ID> busy=9 tasks=dishes source=cubbie"}' "$OTHER_HOOK"  # some other webhook: ignored
+curl -s -d 'bailout_request user=<MAYA_DISCORD_ID> busy=42 tasks=dishes source=cubbie' "https://ntfy.sh/$TOPIC"   # bad busy
+curl -s -d 'bailout_request user=1 busy=9 tasks=dishes source=cubbie' "https://ntfy.sh/$TOPIC"                   # unknown user
+curl -s -d 'bailout_request user=<MAYA_DISCORD_ID> busy=9 tasks=dishes source=cubbie' "https://ntfy.sh/$TOPIC"    # again while the first is running: already running
 ```
+
+The webhook route still works the same way with the Discord webhook URL:
+```
+export HOOK="https://discord.com/api/webhooks/<ID>/<token>"
+curl -s -H 'Content-Type: application/json' -d \
+  '{"content": "bailout_request user=<MAYA_DISCORD_ID> busy=9 tasks=dishes,trash source=cubbie"}' "$HOOK"
+```
+The raw line appears in `#agent-floor` for a blink and is deleted; everything after that is identical.
 
 ## What's next
 
@@ -183,7 +221,8 @@ curl -s -H 'Content-Type: application/json' -d '{"content": "bailout_request use
 - `flows.py` - the coordination logic (bailout, done, payback, shared log), Discord-free.
 - `gates.py` - DM ask with ✅/❌ (raw reaction events) or a typed yes/no in the same DM. No LLM.
 - `bridge.py` - the Cubbie webhook line parser: trusted webhook id, strict format, known user.
-- `bailout-link/` - the Cubbie Skill that posts the bridge line (the Cubbie side of the bridge). Independent of the bot; its own tests live in `bailout-link/tests/`.
+- `relay.py` - the ntfy.sh relay: polls the topic, drops repeats and anything over 5 minutes old, then runs the same parser.
+- `bailout-link/` - the Cubbie Skill that publishes the bridge line to the relay (the Cubbie side of the bridge). Independent of the bot; its own tests live in `bailout-link/tests/`.
 - `store.py` - JSON state file.
 - `bot.py` - Discord commands.
-- `test_*.py` - unittest. Run `python -m unittest -v`. `test_bridge.py` covers the parser, `test_bot_bridge.py` the listener.
+- `test_*.py` - unittest. Run `python -m unittest -v`. `test_bridge.py` covers the parser, `test_bot_bridge.py` the webhook listener, `test_relay.py` and `test_bot_relay.py` the ntfy relay.
