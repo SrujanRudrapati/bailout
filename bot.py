@@ -83,7 +83,8 @@ def my_agent(interaction: discord.Interaction):
 @app_commands.describe(maya="who plays Maya (busy 9)", jordan="who plays Jordan (busy 3)", priya="who plays Priya (busy 5)")
 async def seed(interaction: discord.Interaction, maya: discord.User, jordan: discord.User, priya: discord.User):
     agents = hub.seed({"maya": maya.id, "jordan": jordan.id, "priya": priya.id})
-    names = ", ".join(f"{a.name} -> {interaction.guild.get_member(a.discord_id) or a.discord_id}" for a in agents)
+    players = {maya.id: maya, jordan.id: jordan, priya.id: priya}
+    names = ", ".join(f"{a.name} -> {players[a.discord_id].display_name}" for a in agents)
     await interaction.response.send_message(f"seeded: {names}. ledger reset to zero.")
 
 
@@ -137,7 +138,12 @@ async def bailout(interaction: discord.Interaction, tasks: str):
 
     async def run():
         summary = await hub.bailout(agent, task_list)
-        await interaction.followup.send(summary, ephemeral=True)
+        try:
+            await interaction.followup.send(summary, ephemeral=True)
+        except discord.HTTPException:
+            # the interaction token only lives 15 min and the DM gates can take a while
+            user = await bot.fetch_user(agent.discord_id)
+            await user.send(summary)
 
     bot.loop.create_task(run())
 
