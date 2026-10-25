@@ -50,8 +50,16 @@ class TemplateTests(unittest.TestCase):
     def test_every_event_type_has_a_template(self):
         self.assertEqual(
             set(FLOOR_EVENT_TYPES),
-            {"request", "bid", "cap_check", "passed", "awarded", "declined", "completed", "payback_request", "payback_done"},
+            {"request", "cubbie_request", "bid", "cap_check", "passed", "awarded", "declined", "completed", "payback_request", "payback_done"},
         )
+
+    def test_cubbie_request_template_shows_only_the_band(self):
+        event = {"type": "cubbie_request", "name": "maya", "busy_band": "high", "tasks": ["dishes", "trash"]}
+        self.assertEqual(_template_line(event), "Maya's Cubbie says: swamped this week (busy: high). Agents, bids on dishes, trash please.")
+
+    def test_cubbie_request_rejects_a_busy_number(self):
+        event = {"type": "cubbie_request", "name": "maya", "busy_band": "high", "tasks": ["dishes"]}
+        self.assertFalse(validate_line("Maya's Cubbie says: swamped this week (busy: 9). Agents, bids please.", event))
 
     def test_cap_check_template_says_the_agent_is_checking(self):
         event = {"type": "cap_check", "name": "priya", "task": "trash"}
@@ -93,6 +101,7 @@ class TemplateTests(unittest.TestCase):
     def test_every_template_passes_the_validator(self):
         events = [
             {"type": "request", "name": "maya", "busy_band": "high", "tasks": ["dishes", "trash"]},
+            {"type": "cubbie_request", "name": "maya", "busy_band": "high", "tasks": ["dishes", "trash"]},
             {"type": "bid", "name": "jordan", "task": "dishes", "bid": 5.2, "busy_band": "low"},
             {"type": "cap_check", "name": "priya", "task": "trash"},
             {"type": "passed", "name": "priya", "task": "trash"},

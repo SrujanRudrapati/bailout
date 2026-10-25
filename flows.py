@@ -123,25 +123,49 @@ class Hub:
     # ------------------------------------------------------------ /bailout
 
     async def bailout(self, requester: Agent, tasks: list[str]) -> str:
-        tasks = list(dict.fromkeys(t.strip().lower() for t in tasks if t.strip()))  # dedupe, keep order
-        already_open = [t for t in tasks if t in self.state["open"]]
-        tasks = [t for t in tasks if t not in already_open]
+        tasks, already_open = self._split_open(tasks)
         if not tasks:
-            if already_open:
-                return f"{', '.join(already_open)} already has an open favor. /done it first."
-            return "which tasks? e.g. /bailout dishes, trash"
+            return self._nothing_to_ask(already_open)
 
         # gate 1: does the human actually want to ask?
         answer = await self.ask(requester.discord_id, f"ask the house for cover on **{', '.join(tasks)}**? ✅/❌")
         if answer != "YES":
             return f"ok, not asking anyone. (your answer: {answer})"
 
-        self._new_round()
-        await self._post_and_log(
-            requester.name,
-            {"type": "request", "name": requester.name, "busy_band": busy_band(requester.busy), "tasks": tasks},
-        )
+        request = {"type": "request", "name": requester.name, "busy_band": busy_band(requester.busy), "tasks": tasks}
+        return await self._run_round(requester, request, tasks, already_open)
 
+    async def cubbie_bailout(self, requester: Agent, busy: int, tasks: list[str]) -> str:
+        """A bailout that came in over the Cubbie bridge.
+
+        Gate 1 is skipped: the student already confirmed in Cubbie. The busy level
+        from Cubbie is saved on the agent, and the floor only ever sees its band.
+        """
+        # re-read first so a /me change made since the caller looked the agent up isn't overwritten
+        requester = (self.agent(requester.name) or requester).with_busy(busy)
+        self.save_agent(requester)
+        tasks, already_open = self._split_open(tasks)
+        if not tasks:
+            return self._nothing_to_ask(already_open)
+        request = {"type": "cubbie_request", "name": requester.name, "busy_band": busy_band(requester.busy), "tasks": tasks}
+        return await self._run_round(requester, request, tasks, already_open)
+
+    def _split_open(self, tasks: list[str]) -> tuple[list[str], list[str]]:
+        """(tasks to auction, tasks that already have an open favor). Deduped, order kept."""
+        cleaned = list(dict.fromkeys(t.strip().lower() for t in tasks if t.strip()))
+        already_open = [t for t in cleaned if t in self.state["open"]]
+        return [t for t in cleaned if t not in already_open], already_open
+
+    @staticmethod
+    def _nothing_to_ask(already_open: list[str]) -> str:
+        if already_open:
+            return f"{', '.join(already_open)} already has an open favor. /done it first."
+        return "which tasks? e.g. /bailout dishes, trash"
+
+    async def _run_round(self, requester: Agent, request: dict, tasks: list[str], already_open: list[str]) -> str:
+        """Post the request line, then auction each task. Gate 1 has already happened (or been skipped)."""
+        self._new_round()
+        await self._post_and_log(requester.name, request)
         results = [f"skipped {t}, already has an open favor" for t in already_open]
         for task in tasks:
             results.append(await self._auction_task(requester, task))

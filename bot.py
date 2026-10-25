@@ -2,6 +2,7 @@
 
 Slash commands: /seed, /me busy|dislike|cap, /bailout, /done, /ledger, /shared
 Prefix command:  !advance <name> <busy>   (demo: trigger the payback rule)
+Cubbie bridge:   a webhook line in #agent-floor (see bridge.py) starts a bailout with gate 1 skipped
 
 All the logic lives in flows.py. This file just maps Discord to it.
 """
@@ -16,6 +17,7 @@ from discord import app_commands
 from discord.ext import commands
 from dotenv import load_dotenv
 
+from bridge import BridgeError, accept_bridge_message, is_bridge_webhook
 from flows import Hub
 from gates import ask_by_dm
 from llm import floor_message, verify_photo
@@ -29,9 +31,12 @@ DISCORD_TOKEN = os.environ.get("DISCORD_TOKEN")
 GUILD_ID = os.environ.get("GUILD_ID")  # optional, makes slash commands show up instantly
 FLOOR_CHANNEL = os.environ.get("FLOOR_CHANNEL", "agent-floor")
 STATE_PATH = os.environ.get("STATE_PATH", "state.json")
+BRIDGE_WEBHOOK_ID = os.environ.get("BRIDGE_WEBHOOK_ID", "").strip() or None  # the only webhook the bridge trusts
 
 if not DISCORD_TOKEN:
     raise SystemExit("DISCORD_TOKEN is missing. copy .env.example to .env and fill it in.")
+if BRIDGE_WEBHOOK_ID is not None and not BRIDGE_WEBHOOK_ID.isdigit():
+    raise SystemExit("BRIDGE_WEBHOOK_ID must be the numeric id from the webhook URL (or left empty to turn the bridge off).")
 
 intents = discord.Intents.default()
 intents.message_content = True  # for !advance and typed DM replies
@@ -40,6 +45,8 @@ intents.reactions = True  # ✅/❌ on confirmation DMs
 intents.dm_reactions = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 _background: set[asyncio.Task] = set()  # keep references so tasks aren't garbage collected mid-await
+_bridge_in_flight: set[int] = set()  # discord ids with a Cubbie bailout running, so a webhook retry can't start a second round
+NO_MENTIONS = discord.AllowedMentions.none()  # nothing the bot posts should ever ping anyone
 _synced = False
 
 
@@ -57,7 +64,7 @@ async def post_event(event: dict) -> None:
         log.warning("no #%s channel, event not posted: %s", FLOOR_CHANNEL, event)
         return
     line = await asyncio.to_thread(floor_message, event)
-    await channel.send(line)
+    await channel.send(line, allowed_mentions=NO_MENTIONS)
 
 
 async def ask(discord_id: int, question: str) -> str:
@@ -183,7 +190,11 @@ async def bailout(interaction: discord.Interaction, tasks: str):
             log.exception("bailout failed")
         await report_back(interaction, agent.discord_id, summary)
 
-    task = bot.loop.create_task(run())
+    run_in_background(run())
+
+
+def run_in_background(coro) -> None:
+    task = asyncio.get_running_loop().create_task(coro)
     _background.add(task)
     task.add_done_callback(_background.discard)
 
@@ -195,9 +206,73 @@ async def report_back(interaction: discord.Interaction, discord_id: int, text: s
         return
     except discord.HTTPException:
         pass
+    await dm_user(discord_id, text)
+
+
+# ---------------------------------------------------------------- cubbie bridge
+
+
+@bot.listen("on_message")
+async def on_bridge_message(message: discord.Message):
+    """A Cubbie Skill posts one line through the bridge webhook. Only that webhook is trusted.
+
+    The raw line (with the exact busy number) is never echoed: the floor only ever
+    gets the normal request line with the busy band, and the webhook message is
+    deleted if the bot may manage messages.
+    """
+    trusted = int(BRIDGE_WEBHOOK_ID) if BRIDGE_WEBHOOK_ID else None
+    if not is_bridge_webhook(message.webhook_id, trusted):
+        if message.webhook_id is not None:
+            log.debug("webhook message %s from webhook %s is not the bridge, ignoring", message.id, message.webhook_id)
+        return
+    # from here on the message is the bridge's, so it always gets cleaned up
+    await delete_bridge_message(message)
+    try:
+        if getattr(message.channel, "name", None) != FLOOR_CHANNEL:
+            raise BridgeError(f"posted in #{message.channel}, not #{FLOOR_CHANNEL}")
+        request = accept_bridge_message(message.webhook_id, message.content, trusted, hub.agent_for_user)
+        if request.user_id in _bridge_in_flight:
+            raise BridgeError(f"a cubbie bailout for user {request.user_id} is already running")
+    except BridgeError as why:
+        # the rejected line goes to the bot log only (never the floor), truncated so a bad actor can't flood it
+        log.info("ignoring bridge message %s: %s (content %r)", message.id, why, message.content[:120])
+        return
+    agent = hub.agent_for_user(request.user_id)
+    log.info("cubbie bridge: bailout for %s on %s (message %s)", agent.name, ", ".join(request.tasks), message.id)
+    _bridge_in_flight.add(request.user_id)
+
+    async def run():
+        try:
+            summary = await hub.cubbie_bailout(agent, request.busy, list(request.tasks))
+        except discord.Forbidden:
+            summary = "I couldn't DM someone (DMs closed?) or can't post in the floor channel. nothing was changed."
+            log.exception("cubbie bailout failed")
+        except Exception:
+            summary = "something went wrong mid-bailout, check the bot logs."
+            log.exception("cubbie bailout failed")
+        finally:
+            _bridge_in_flight.discard(request.user_id)
+        await dm_user(agent.discord_id, f"your Cubbie asked the house for cover.\n{summary}")
+
+    run_in_background(run())
+
+
+async def delete_bridge_message(message: discord.Message) -> None:
+    """Remove the raw webhook line so the exact busy number never sits on the floor."""
+    me = message.guild.me if message.guild else None
+    if me is None or not message.channel.permissions_for(me).manage_messages:
+        log.warning("no Manage Messages permission in #%s, raw bridge message %s stays visible", message.channel, message.id)
+        return
+    try:
+        await message.delete()
+    except discord.HTTPException as exc:
+        log.warning("could not delete bridge message %s: %s", message.id, exc)
+
+
+async def dm_user(discord_id: int, text: str) -> None:
     try:
         user = await bot.fetch_user(discord_id)
-        await user.send(text)
+        await user.send(text, allowed_mentions=NO_MENTIONS)
     except discord.HTTPException:
         log.error("could not deliver result to %s: %s", discord_id, text)
 

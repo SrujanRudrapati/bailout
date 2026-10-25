@@ -36,6 +36,12 @@ PHOTO_OPTIONS = ("DONE", "NOT_DONE", "UNSURE")
 # is describing so it can't mix "accepted the task" up with "finished the task".
 FLOOR_EVENT_TYPES = {
     "request": "someone is asking the house to cover one or more tasks",
+    "cubbie_request": (
+        "the requester's Cubbie (their planner app) reports they are swamped and asks the agents to bid on the tasks. "
+        "Only the busy band is known, never a number. Capitalize the name and never use a pronoun for the requester "
+        "(you don't know their pronouns), so write 'says: swamped' rather than 'says they're swamped'. "
+        "Shape: '<Name>'s Cubbie says: swamped this week (busy: <band>). Agents, bids please.'"
+    ),
     "bid": "an agent offers to do a task for a number of credits",
     "cap_check": "the agent's bid is over its human's limit, so it is checking with its human before bidding. nothing decided yet",
     "passed": "the agent is not bidding on this task (its human declined or didn't answer)",
@@ -192,6 +198,8 @@ def _template_line(event: dict) -> str:
     price = event.get("price")
     if kind == "request":
         return f"{who} is {event.get('busy_band')} on time. anyone able to cover {', '.join(event.get('tasks', []))}?"
+    if kind == "cubbie_request":
+        return f"{_capitalized(who)}'s Cubbie says: swamped this week (busy: {event.get('busy_band')}). Agents, bids on {', '.join(event.get('tasks', []))} please."
     if kind == "bid":
         return f"{who} can do {task} for {event.get('bid')} credits (busy: {event.get('busy_band')})."
     if kind == "cap_check":
@@ -209,6 +217,11 @@ def _template_line(event: dict) -> str:
     if kind == "payback_done":
         return f"{who}'s taking {task} off {event.get('creditor')}'s plate for {price} credits. paying back."
     return json.dumps(event)
+
+
+def _capitalized(name: str) -> str:
+    """Upper-case only the first letter, leaving the rest as the roommate spelled it."""
+    return name[:1].upper() + name[1:]
 
 
 # ---------------------------------------------------------------- human replies

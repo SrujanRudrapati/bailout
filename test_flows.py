@@ -281,3 +281,36 @@ class CapCheckTests(unittest.TestCase):
         run(self.hub.bailout(self.hub.agent("maya"), ["dishes"]))
         self.assertNotIn("passed", [e["type"] for e in self.fake.events])
         self.assertEqual(self.hub.open_favor("dishes")["price"], 9.0)
+
+
+class CubbieBailoutTests(unittest.TestCase):
+    def setUp(self):
+        self.fake = FakeDiscord()
+        self.hub, self.path = make_hub(self.fake)
+
+    def tearDown(self):
+        os.remove(self.path)
+
+    def test_skips_gate_1_and_still_runs_gate_2(self):
+        run(self.hub.cubbie_bailout(self.hub.agent("maya"), busy=9, tasks=["dishes"]))
+        asked = [discord_id for discord_id, _ in self.fake.questions]
+        self.assertNotIn(1, asked)  # maya is never asked, cubbie already confirmed
+        self.assertIn(2, asked)  # jordan still gets the gate 2 DM
+        self.assertEqual(self.hub.open_favor("dishes")["helper"], "jordan")
+
+    def test_sets_the_requesters_busy_level(self):
+        run(self.hub.cubbie_bailout(self.hub.agent("maya"), busy=4, tasks=["dishes"]))
+        self.assertEqual(self.hub.agent("maya").busy, 4)
+
+    def test_floor_sees_a_cubbie_request_with_only_the_band(self):
+        run(self.hub.cubbie_bailout(self.hub.agent("maya"), busy=8, tasks=["dishes", "trash"]))
+        request = self.fake.events[0]
+        self.assertEqual(request, {"type": "cubbie_request", "name": "maya", "busy_band": "high", "tasks": ["dishes", "trash"]})
+        self.assertNotIn("8", str(request))
+
+    def test_already_open_tasks_are_skipped_without_posting(self):
+        run(self.hub.cubbie_bailout(self.hub.agent("maya"), busy=9, tasks=["dishes"]))
+        self.fake.events.clear()
+        summary = run(self.hub.cubbie_bailout(self.hub.agent("maya"), busy=9, tasks=["dishes"]))
+        self.assertIn("already has an open favor", summary)
+        self.assertEqual(self.fake.events, [])

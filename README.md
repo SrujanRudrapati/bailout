@@ -61,7 +61,8 @@ vague like "hmm depends" to see the escalation.
 1. Python 3.12+, then `python -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt`
 2. Make a Discord bot at https://discord.com/developers, turn on the **Message Content**
    intent, invite it to your server with `applications.commands` + `bot` scopes
-   (send messages, add reactions).
+   (send messages, add reactions, and manage messages if you want the Cubbie bridge
+   to clean up after itself).
 3. Make a channel called `#agent-floor`.
 4. `cp .env.example .env` and fill in `DISCORD_TOKEN` and `ANTHROPIC_API_KEY`.
    Setting `GUILD_ID` makes slash commands show up immediately instead of in ~an hour.
@@ -69,7 +70,7 @@ vague like "hmm depends" to see the escalation.
 6. Run the tests: `python -m unittest -v`
 
 Without an API key the bot still works: floor lines fall back to plain templates.
-Every floor line is one event type (request, bid, cap_check, passed, awarded, declined,
+Every floor line is one event type (request, cubbie_request, bid, cap_check, passed, awarded, declined,
 completed, payback_request, payback_done). The model is told the type and only its share() data, and
 its line is checked before posting: no `$`/dollars/paid/money wording, no numbers that
 aren't in the event, and an `awarded` line can't claim the task is finished. A line that
@@ -107,6 +108,62 @@ As Maya (busy 9, two midterms):
 - Jordan gets a DM "call in the favor?" and Maya gets "let your agent offer a task back?" (gate 3)
 - Maya's agent picks the task Maya minds least and offers it back. Settles on `/done`.
 
+## Cubbie bridge
+
+A Cubbie Skill can start a bailout for you, so busy never has to be typed by hand.
+Cubbie posts one line into `#agent-floor` through a Discord **webhook**, and the bot
+picks it up:
+
+```
+bailout_request user=<discord_user_id> busy=<1-10> tasks=<task1,task2> source=cubbie
+```
+
+How it is kept safe (`bridge.py`, tested in `test_bridge.py`):
+
+- **One trusted webhook.** The bot only acts on messages whose `webhook_id` equals
+  `BRIDGE_WEBHOOK_ID` from `.env`. Anything else from any other webhook is ignored and
+  logged. Leave `BRIDGE_WEBHOOK_ID` empty and the bridge is off.
+- **Strict parse.** The line must match that exact shape: four keys in that order,
+  numeric user id, integer busy 1-10, up to five letters-only task names (no digits, no
+  `@`, so a task can't smuggle a number or a ping onto the floor), `source=cubbie`.
+  Anything off (bad busy, unknown user, extra keys, a second line, a request for a user
+  whose Cubbie bailout is still running) is ignored and logged with the reason.
+- **Gate 1 is skipped.** The student already confirmed in Cubbie, so their agent does not
+  DM them "ask the house?" again. Gate 2 (the winner's human) and the cap check still run.
+- **The number never hits the floor.** The floor gets one line built from the busy *band*
+  only, e.g. "Maya's Cubbie says: swamped this week (busy: high). Agents, bids on dishes, trash please."
+  The raw webhook line is deleted right after parsing if the bot has **Manage Messages**
+  in `#agent-floor` (it logs a warning if it doesn't). Then the normal auction and award
+  flow runs, and the requester gets the result by DM.
+
+Setup: in Discord, `#agent-floor` -> Edit channel -> Integrations -> Webhooks -> New
+Webhook, copy the URL. The URL looks like `https://discord.com/api/webhooks/<ID>/<token>`;
+put `<ID>` in `BRIDGE_WEBHOOK_ID`. Give the bot the **Manage Messages** permission on the
+channel. The Cubbie Skill keeps the full URL (the token part is its secret). Whoever holds
+that URL can start a bailout as any seeded roommate, so treat it like a password; the
+`user=` field is trusted because the webhook is, not on its own.
+
+### Cubbie demo script (30 seconds)
+
+Same three seeded players as above. From a terminal, play the Cubbie Skill:
+
+```
+export HOOK="https://discord.com/api/webhooks/<ID>/<token>"   # the bridge webhook
+curl -s -H 'Content-Type: application/json' -d \
+  '{"content": "bailout_request user=<MAYA_DISCORD_ID> busy=9 tasks=dishes,trash source=cubbie"}' "$HOOK"
+```
+- The raw line appears in `#agent-floor` for a blink and is deleted.
+- Maya gets **no** gate 1 DM. The floor says "Maya's Cubbie says: swamped this week (busy: high). Agents, bids on dishes, trash please." Only "high", never "9".
+- Jordan's and Priya's agents bid, Jordan gets the gate 2 DM for dishes, same as a `/bailout`.
+- Maya gets a DM with the result. `/shared` shows the `cubbie_request` event and that only the band left her agent.
+
+Now show the rejections (watch the bot log, nothing happens on the floor):
+```
+curl -s -H 'Content-Type: application/json' -d '{"content": "bailout_request user=<MAYA_DISCORD_ID> busy=42 tasks=dishes source=cubbie"}' "$HOOK"   # bad busy
+curl -s -H 'Content-Type: application/json' -d '{"content": "bailout_request user=1 busy=9 tasks=dishes source=cubbie"}' "$HOOK"                   # unknown user
+curl -s -H 'Content-Type: application/json' -d '{"content": "bailout_request user=<MAYA_DISCORD_ID> busy=9 tasks=dishes source=cubbie"}' "$OTHER_HOOK"  # some other webhook: ignored
+```
+
 ## What's next
 
 - **Photo proof.** `/done <task>` takes an optional photo. Claude Sonnet looks at it
@@ -114,9 +171,9 @@ As Maya (busy 9, two midterms):
   instead of the model deciding. Works now, needs more testing with real messy kitchens.
 - **Group-project tasks.** Same market, but the "roommates" are teammates and the
   tasks are "write the intro" / "make the slides".
-- **Busy score from our Cubbie skill.** Right now busy is set by hand with `/me busy`.
-  The plan is to compute it from calendar + assignment deadlines so nobody has to
-  remember to update it.
+- **Busy score from our Cubbie skill.** The bridge above takes a busy level from
+  Cubbie today. Next is computing it inside Cubbie from calendar + assignment deadlines
+  so nobody has to remember to update it.
 
 ## Files
 
@@ -125,7 +182,8 @@ As Maya (busy 9, two midterms):
 - `llm.py` - Claude calls: floor one-liners, reply parsing, photo check.
 - `flows.py` - the coordination logic (bailout, done, payback, shared log), Discord-free.
 - `gates.py` - DM ask with ✅/❌ (raw reaction events) or a typed yes/no in the same DM. No LLM.
+- `bridge.py` - the Cubbie webhook line parser: trusted webhook id, strict format, known user.
 - `bailout-link/` - the Cubbie Skill that posts the bridge line (the Cubbie side of the bridge). Independent of the bot; its own tests live in `bailout-link/tests/`.
 - `store.py` - JSON state file.
 - `bot.py` - Discord commands.
-- `test_*.py` - unittest. Run `python -m unittest -v`.
+- `test_*.py` - unittest. Run `python -m unittest -v`. `test_bridge.py` covers the parser, `test_bot_bridge.py` the listener.
