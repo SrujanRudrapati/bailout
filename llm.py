@@ -67,7 +67,8 @@ FLOOR_EVENT_TYPES = {
 FLOOR_SYSTEM = (
     "You are a roommate's personal chore agent posting one line in a shared Discord channel. "
     "You get an event type, what that type means, and the event's JSON data. Write ONE short, "
-    "casual line (under 25 words) describing ONLY that event. Credits are favors, not money: "
+    "casual line (under 25 words) describing ONLY that event. Capitalize roommates' names "
+    "(Jordan, not jordan). Credits are favors, not money: "
     "always say 'credits', never '$', 'dollars', 'paid' or 'money'. Never invent reasons, "
     "schedules, feelings, or numbers that are not in the data. Only use the fields given. "
     "No emojis except at most one. No quotes around the line.\n\nEvent types:\n"
@@ -135,7 +136,7 @@ def floor_message(event: dict) -> str:
         log.warning("connection error, using template line")
         return fallback
     lines = _text_of(response).splitlines()
-    line = lines[0].strip() if lines else ""
+    line = capitalize_names(lines[0].strip() if lines else "", event)
     if not validate_line(line, event):
         log.warning("floor line failed validation for %s event, using template: %r", event.get("type"), line)
         return fallback
@@ -205,13 +206,13 @@ def _numbers_in(value) -> set[float]:
 def _template_line(event: dict) -> str:
     """Plain fallback so the floor still works without an API key. One template per event type."""
     kind = event.get("type")
-    who = event.get("name", "someone")
+    who = _capitalized(event.get("name", "someone"))
     task = event.get("task")
     price = event.get("price")
     if kind == "request":
         return f"{who} is {event.get('busy_band')} on time. anyone able to cover {', '.join(event.get('tasks', []))}?"
     if kind == "cubbie_request":
-        return f"{_capitalized(who)}'s Cubbie says: swamped this week (busy: {event.get('busy_band')}). Agents, bids on {', '.join(event.get('tasks', []))} please."
+        return f"{who}'s Cubbie says: swamped this week (busy: {event.get('busy_band')}). Agents, bids on {', '.join(event.get('tasks', []))} please."
     if kind == "bid":
         return f"{who} can do {task} for {event.get('bid')} credits (busy: {event.get('busy_band')})."
     if kind == "cap_check":
@@ -225,17 +226,31 @@ def _template_line(event: dict) -> str:
     if kind == "unfilled":
         return f"nobody's taking {task} for {who} this time: {unfilled_reason(event.get('bids', 0))}"
     if kind == "completed":
-        return f"{who} finished {task} for {event.get('requester')}. +{price} credits to {who}."
+        return f"{who} finished {task} for {_capitalized(event.get('requester', ''))}. +{price} credits to {who}."
     if kind == "payback_request":
-        return f"{who}'s swamped. {event.get('debtor')}'s agent is first in line to help."
+        return f"{who}'s swamped. {_capitalized(event.get('debtor', ''))}'s agent is first in line to help."
     if kind == "payback_done":
-        return f"{who}'s taking {task} off {event.get('creditor')}'s plate for {price} credits. paying back."
+        return f"{who}'s taking {task} off {_capitalized(event.get('creditor', ''))}'s plate for {price} credits. paying back."
     return json.dumps(event)
+
+
+# every event field that holds a roommate's name. Names are stored lowercase; the floor shows them capitalized.
+_NAME_FIELDS = ("name", "debtor", "requester", "creditor")
 
 
 def _capitalized(name: str) -> str:
     """Upper-case only the first letter, leaving the rest as the roommate spelled it."""
     return name[:1].upper() + name[1:]
+
+
+def capitalize_names(line: str, event: dict) -> str:
+    """Return the line with every roommate named in the event written capitalized, wherever it appears."""
+    fixed = line
+    for field_name in _NAME_FIELDS:
+        name = event.get(field_name)
+        if isinstance(name, str) and name:
+            fixed = re.sub(rf"\b{re.escape(name)}\b", _capitalized(name), fixed, flags=re.IGNORECASE)
+    return fixed
 
 
 # ---------------------------------------------------------------- human replies

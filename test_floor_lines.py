@@ -4,7 +4,7 @@ import os
 import unittest
 from unittest import mock
 
-from llm import FLOOR_EVENT_TYPES, _template_line, floor_message, validate_line
+from llm import FLOOR_EVENT_TYPES, _template_line, capitalize_names, floor_message, validate_line
 
 AWARDED = {"type": "awarded", "name": "jordan", "task": "dishes", "price": 9.0}
 COMPLETED = {"type": "completed", "name": "jordan", "task": "dishes", "price": 9.0, "requester": "maya"}
@@ -63,29 +63,29 @@ class TemplateTests(unittest.TestCase):
 
     def test_cap_check_template_says_the_agent_is_checking(self):
         event = {"type": "cap_check", "name": "priya", "task": "trash"}
-        self.assertEqual(_template_line(event), "priya's agent is checking with them before bidding on trash.")
+        self.assertEqual(_template_line(event), "Priya's agent is checking with them before bidding on trash.")
 
     def test_passed_template(self):
         event = {"type": "passed", "name": "priya", "task": "trash"}
-        self.assertEqual(_template_line(event), "priya's agent passed on trash.")
+        self.assertEqual(_template_line(event), "Priya's agent passed on trash.")
 
     def test_awarded_template(self):
-        self.assertEqual(_template_line(AWARDED), "jordan's taking dishes for 9.0 credits.")
+        self.assertEqual(_template_line(AWARDED), "Jordan's taking dishes for 9.0 credits.")
 
     def test_completed_template(self):
-        self.assertEqual(_template_line(COMPLETED), "jordan finished dishes for maya. +9.0 credits to jordan.")
+        self.assertEqual(_template_line(COMPLETED), "Jordan finished dishes for Maya. +9.0 credits to Jordan.")
 
     def test_unfilled_template_gives_the_count_reason(self):
         event = {"type": "unfilled", "name": "maya", "task": "dishes", "bids": 2}
-        self.assertEqual(_template_line(event), "nobody's taking dishes for maya this time: 2 agents bid, but every human passed.")
+        self.assertEqual(_template_line(event), "nobody's taking dishes for Maya this time: 2 agents bid, but every human passed.")
 
     def test_unfilled_template_with_no_bids(self):
         event = {"type": "unfilled", "name": "maya", "task": "dishes", "bids": 0}
-        self.assertEqual(_template_line(event), "nobody's taking dishes for maya this time: no agent bid.")
+        self.assertEqual(_template_line(event), "nobody's taking dishes for Maya this time: no agent bid.")
 
     def test_unfilled_template_singular_bidder(self):
         event = {"type": "unfilled", "name": "maya", "task": "trash", "bids": 1}
-        self.assertEqual(_template_line(event), "nobody's taking trash for maya this time: 1 agent bid, but every human passed.")
+        self.assertEqual(_template_line(event), "nobody's taking trash for Maya this time: 1 agent bid, but every human passed.")
 
     def test_unfilled_rejects_a_busy_comparison(self):
         # the code never compares busy levels, so a line claiming one is an invention
@@ -97,7 +97,7 @@ class TemplateTests(unittest.TestCase):
 
     def test_payback_request_template_is_a_friendly_offer_not_a_demand(self):
         event = {"type": "payback_request", "name": "jordan", "busy_band": "high", "debtor": "maya"}
-        self.assertEqual(_template_line(event), "jordan's swamped. maya's agent is first in line to help.")
+        self.assertEqual(_template_line(event), "Jordan's swamped. Maya's agent is first in line to help.")
 
     def test_payback_request_rejects_demand_wording(self):
         event = {"type": "payback_request", "name": "jordan", "busy_band": "high", "debtor": "maya"}
@@ -113,7 +113,7 @@ class TemplateTests(unittest.TestCase):
 
     def test_payback_done_template(self):
         event = {"type": "payback_done", "name": "maya", "task": "trash", "price": 5.0, "creditor": "jordan"}
-        self.assertEqual(_template_line(event), "maya's taking trash off jordan's plate for 5.0 credits. paying back.")
+        self.assertEqual(_template_line(event), "Maya's taking trash off Jordan's plate for 5.0 credits. paying back.")
 
     def test_every_template_passes_the_validator(self):
         events = [
@@ -131,6 +131,32 @@ class TemplateTests(unittest.TestCase):
         ]
         for event in events:
             self.assertTrue(validate_line(_template_line(event), event), event["type"])
+
+
+class CapitalizedNameTests(unittest.TestCase):
+    """Names are stored lowercase; every floor line shows them capitalized."""
+
+    def test_every_template_capitalizes_every_name_it_uses(self):
+        events = [
+            {"type": "request", "name": "maya", "busy_band": "high", "tasks": ["dishes", "trash"]},
+            {"type": "bid", "name": "jordan", "task": "dishes", "bid": 5.2, "busy_band": "low"},
+            AWARDED,
+            COMPLETED,
+            {"type": "payback_request", "name": "jordan", "busy_band": "high", "debtor": "maya"},
+            {"type": "payback_done", "name": "maya", "task": "trash", "price": 5.0, "creditor": "jordan"},
+        ]
+        for event in events:
+            line = _template_line(event)
+            for name in ("maya", "jordan", "priya"):
+                self.assertNotRegex(line, rf"\b{name}\b", event["type"])
+
+    def test_capitalize_names_fixes_every_name_field(self):
+        event = {"type": "completed", "name": "jordan", "task": "dishes", "price": 9.0, "requester": "maya"}
+        self.assertEqual(capitalize_names("jordan did dishes for maya. jordan rocks.", event), "Jordan did dishes for Maya. Jordan rocks.")
+
+    def test_capitalize_names_leaves_other_words_alone(self):
+        event = {"type": "awarded", "name": "max", "task": "dishes", "price": 9.0}
+        self.assertEqual(capitalize_names("max takes dishes, maximum effort.", event), "Max takes dishes, maximum effort.")
 
 
 class FloorMessageValidationTests(unittest.TestCase):
@@ -152,6 +178,11 @@ class FloorMessageValidationTests(unittest.TestCase):
     @mock.patch.dict(os.environ, {"ANTHROPIC_API_KEY": "x"})
     def test_good_llm_line_is_used(self):
         with mock.patch("llm._client", return_value=self._fake_client("Jordan's on dishes for 9.0 credits.")):
+            self.assertEqual(floor_message(AWARDED), "Jordan's on dishes for 9.0 credits.")
+
+    @mock.patch.dict(os.environ, {"ANTHROPIC_API_KEY": "x"})
+    def test_llm_line_gets_its_names_capitalized(self):
+        with mock.patch("llm._client", return_value=self._fake_client("jordan's on dishes for 9.0 credits.")):
             self.assertEqual(floor_message(AWARDED), "Jordan's on dishes for 9.0 credits.")
 
     @mock.patch.dict(os.environ, {"ANTHROPIC_API_KEY": "x"})

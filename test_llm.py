@@ -31,7 +31,7 @@ class FloorFallbackTests(unittest.TestCase):
     @mock.patch.dict(os.environ, {"ANTHROPIC_API_KEY": ""})
     def test_floor_message_without_key_uses_template(self):
         line = floor_message({"type": "bid", "name": "jordan", "task": "dishes", "bid": 5.2, "busy_band": "low"})
-        self.assertIn("jordan", line)
+        self.assertIn("Jordan", line)
         self.assertIn("5.2", line)
 
     def test_template_only_uses_given_fields(self):
