@@ -18,7 +18,7 @@ from dotenv import load_dotenv
 
 from flows import Hub
 from gates import ask_by_dm
-from llm import floor_message
+from llm import floor_message, verify_photo
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
@@ -152,8 +152,30 @@ async def done(interaction: discord.Interaction, task: str, photo: Optional[disc
     if agent is None:
         return await interaction.response.send_message("you don't have an agent yet. run /seed.", ephemeral=True)
     await interaction.response.defer()
+    if photo is not None:
+        verdict = await check_photo(photo, task)
+        if verdict == "NOT_DONE":
+            return await interaction.followup.send(f"the photo doesn't look like {task} is done. not settling yet.")
+        if verdict == "UNSURE":
+            # the model isn't sure, so ask the person who asked for the favor instead of guessing
+            favor = hub.open_favor(task)
+            if favor is None:
+                return await interaction.followup.send(f"no open favor for {task}.")
+            requester = hub.agent(favor["requester"])
+            answer = await ask(requester.discord_id, f"I couldn't tell from the photo. did **{favor['helper']}** finish **{task}**? ✅/❌")
+            if answer != "YES":
+                return await interaction.followup.send(f"{requester.name} didn't confirm {task}, not settling. ({answer})")
     summary = await hub.done(agent, task)
     await interaction.followup.send(summary)
+
+
+async def check_photo(photo: discord.Attachment, task: str) -> str:
+    """DONE / NOT_DONE / UNSURE. Anything that isn't an image counts as UNSURE."""
+    media_type = photo.content_type or ""
+    if not media_type.startswith("image/"):
+        return "UNSURE"
+    image_bytes = await photo.read()
+    return await asyncio.to_thread(verify_photo, image_bytes, media_type.split(";")[0], task)
 
 
 # ---------------------------------------------------------------- /ledger and /shared
