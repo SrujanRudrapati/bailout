@@ -160,6 +160,11 @@ class CommandLineTest(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertRegex(out.splitlines()[0], r"^busy=(?:[1-9]|10)$")
 
+    def test_sample_mode_defaults_to_a_date_inside_the_sample_week(self):
+        code, out, _ = self.run_main(["--sample"])
+        self.assertEqual(code, 0)
+        self.assertGreaterEqual(int(out.splitlines()[0].split("=")[1]), 2)
+
     def test_invalid_json_exits_2(self):
         code, _, err = self.run_main(["--now", NOW.isoformat(), "--input", "-"], "{not json")
         self.assertEqual(code, 2)

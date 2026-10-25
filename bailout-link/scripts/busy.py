@@ -34,6 +34,7 @@ from typing import Optional
 
 WINDOW_DAYS = 7
 SAMPLE = Path(__file__).resolve().parent.parent / "assets" / "sample_canvas.json"
+SAMPLE_NOW = "2026-10-19T09:00:00+00:00"  # a Monday inside the sample week, so --sample always shows something
 
 # How much a kind of work weighs compared with a plain assignment.
 KIND_FACTOR = {"assignment": 1.0, "quiz": 1.0, "exam": 2.5}
@@ -186,7 +187,12 @@ def parse_args(argv):
 
 def main(argv=None) -> int:
     args = parse_args(argv)
-    now = parse_when(args.now) if args.now else datetime.now(timezone.utc)
+    if args.now:
+        now = parse_when(args.now)
+    elif args.sample:
+        now = parse_when(SAMPLE_NOW)
+    else:
+        now = datetime.now(timezone.utc)
     if now is None:
         print("--now must be an ISO 8601 date-time like 2026-10-24T09:00:00-05:00", file=sys.stderr)
         return 2
