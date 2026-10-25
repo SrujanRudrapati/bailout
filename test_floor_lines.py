@@ -75,22 +75,23 @@ class TemplateTests(unittest.TestCase):
     def test_completed_template(self):
         self.assertEqual(_template_line(COMPLETED), "Jordan finished dishes for Maya. +9.0 credits to Jordan.")
 
-    def test_unfilled_template_gives_the_count_reason(self):
-        event = {"type": "unfilled", "name": "maya", "task": "dishes", "bids": 2}
+    def test_unfilled_template_echoes_the_reason_the_code_chose(self):
+        event = {"type": "unfilled", "name": "maya", "task": "dishes", "bids": 2, "reason": "2 agents bid, but every human passed."}
         self.assertEqual(_template_line(event), "nobody's taking dishes for Maya this time: 2 agents bid, but every human passed.")
 
-    def test_unfilled_template_with_no_bids(self):
-        event = {"type": "unfilled", "name": "maya", "task": "dishes", "bids": 0}
-        self.assertEqual(_template_line(event), "nobody's taking dishes for Maya this time: no agent bid.")
+    def test_unfilled_template_capitalizes_the_name_inside_the_reason(self):
+        event = {"type": "unfilled", "name": "maya", "task": "dishes", "bids": 0, "reason": "nobody's less busy than maya this week."}
+        self.assertEqual(_template_line(event), "nobody's taking dishes for Maya this time: nobody's less busy than Maya this week.")
 
-    def test_unfilled_template_singular_bidder(self):
-        event = {"type": "unfilled", "name": "maya", "task": "trash", "bids": 1}
-        self.assertEqual(_template_line(event), "nobody's taking trash for Maya this time: 1 agent bid, but every human passed.")
+    def test_unfilled_rejects_a_busy_claim_the_code_did_not_make(self):
+        # the reason here is about the humans passing, so a busy comparison is an invention
+        event = {"type": "unfilled", "name": "maya", "task": "dishes", "bids": 2, "reason": "2 agents bid, but every human passed."}
+        self.assertFalse(validate_line("nobody's less busy than Maya this week.", event))
 
-    def test_unfilled_rejects_a_busy_comparison(self):
-        # the code never compares busy levels, so a line claiming one is an invention
-        event = {"type": "unfilled", "name": "maya", "task": "dishes", "bids": 2}
-        self.assertFalse(validate_line("nobody's less busy than maya this week, busy 2.", event))
+    def test_unfilled_allows_the_busy_reason_the_code_chose_but_never_a_number(self):
+        event = {"type": "unfilled", "name": "maya", "task": "dishes", "bids": 0, "reason": "nobody's less busy than Maya this week."}
+        self.assertTrue(validate_line("nobody's taking dishes for Maya this time: nobody's less busy than Maya this week.", event))
+        self.assertFalse(validate_line("nobody's less busy than Maya (busy 2) this week.", event))
 
     def test_no_ledger_event_type(self):
         self.assertNotIn("ledger", FLOOR_EVENT_TYPES)
@@ -124,7 +125,8 @@ class TemplateTests(unittest.TestCase):
             {"type": "passed", "name": "priya", "task": "trash"},
             AWARDED,
             {"type": "declined", "name": "jordan", "task": "dishes"},
-            {"type": "unfilled", "name": "maya", "task": "dishes", "bids": 2},
+            {"type": "unfilled", "name": "maya", "task": "dishes", "bids": 2, "reason": "2 agents bid, but every human passed."},
+            {"type": "unfilled", "name": "maya", "task": "dishes", "bids": 0, "reason": "nobody's less busy than Maya this week."},
             COMPLETED,
             {"type": "payback_request", "name": "jordan", "busy_band": "high", "debtor": "maya"},
             {"type": "payback_done", "name": "maya", "task": "trash", "price": 5.0, "creditor": "jordan"},

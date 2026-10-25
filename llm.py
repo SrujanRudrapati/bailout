@@ -23,8 +23,6 @@ import re
 
 import anthropic
 
-from flows import unfilled_reason
-
 log = logging.getLogger("bailout.llm")
 
 FLOOR_MODEL = "claude-haiku-5-5"
@@ -50,9 +48,9 @@ FLOOR_EVENT_TYPES = {
     "awarded": "the winner's human ACCEPTED the task. It is NOT done yet. Do not say finished/done/completed",
     "declined": "an agent passed on a task",
     "unfilled": (
-        "nobody is taking the task this round: either no agent bid, or every agent that bid had its human pass at the "
-        "confirmation step. Say only that, using the bid count given. Never guess a reason and never mention busy levels: "
-        "the auction does not compare them. Shape: 'nobody's taking <task> for <name> this time: <count> agents bid, but every human passed.'"
+        "nobody is taking the task this round. The data carries the reason, already decided by the code: restate it and "
+        "nothing more. Never add a reason of your own, never mention busy levels unless the given reason does, and never "
+        "use a number that is not in the data. Shape: 'nobody's taking <task> for <Name> this time: <reason>'"
     ),
     "completed": "the task was actually finished (/done). the helper earned the credits from the requester",
     "payback_request": (
@@ -155,7 +153,7 @@ _FORBIDDEN_WORDS = ("$", "dollar", "paid", "money")
 # a payback offer is a friendly heads-up, never a demand
 _DEMAND_WORDS = re.compile(r"\b(owe|owes|owed|owing|debt|debts|pay\s*(?:it\s*)?back|payback|must|time to)\b", re.IGNORECASE)
 _COMPLETION_WORDS = re.compile(r"\b(finish|finished|done|complete|completed)\b", re.IGNORECASE)
-# an unfilled task has nothing to do with anyone's busy level, so a line saying otherwise is invented
+# the code picks the reason a task went unfilled; busy wording the reason doesn't contain is invented
 _BUSY_WORDS = re.compile(r"\b(busy|busier|busiest|swamped|free)\b", re.IGNORECASE)
 _NUMBER_RE = re.compile(r"\d+(?:\.\d+)?")
 
@@ -166,7 +164,7 @@ def validate_line(line: str, event: dict) -> bool:
     Rejects money wording, any number not present in the event data,
     completion wording on an `awarded` event (accepted != finished),
     demand wording on a `payback_request` (it is an offer, not a bill), and
-    busy wording on an `unfilled` event (the auction never compares busy).
+    busy wording on an `unfilled` event unless the reason the code chose is about busy.
     """
     if not line.strip() or "\n" in line:
         return False
@@ -180,7 +178,7 @@ def validate_line(line: str, event: dict) -> bool:
         return False
     if event.get("type") == "payback_request" and _DEMAND_WORDS.search(line):
         return False
-    if event.get("type") == "unfilled" and _BUSY_WORDS.search(line):
+    if event.get("type") == "unfilled" and _BUSY_WORDS.search(line) and not _BUSY_WORDS.search(str(event.get("reason", ""))):
         return False
     return True
 
@@ -224,7 +222,7 @@ def _template_line(event: dict) -> str:
     if kind == "declined":
         return f"{who} is passing on {task}, asking the next bidder."
     if kind == "unfilled":
-        return f"nobody's taking {task} for {who} this time: {unfilled_reason(event.get('bids', 0))}"
+        return capitalize_names(f"nobody's taking {task} for {who} this time: {event.get('reason', 'no agent bid.')}", event)
     if kind == "completed":
         return f"{who} finished {task} for {_capitalized(event.get('requester', ''))}. +{price} credits to {who}."
     if kind == "payback_request":

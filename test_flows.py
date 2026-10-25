@@ -8,7 +8,7 @@ import os
 import tempfile
 import unittest
 
-from flows import Hub
+from flows import Hub, unfilled_reason
 from market import ledger_sum
 
 IDS = {"maya": 1, "jordan": 2, "priya": 3}
@@ -200,21 +200,36 @@ class UnfilledTaskTests(unittest.TestCase):
         summary = run(self.hub.cubbie_bailout(self.hub.agent("maya"), busy=2, tasks=["dishes"]))
         self.assertEqual(
             self.fake.events[-1],
-            {"type": "unfilled", "name": "maya", "task": "dishes", "bids": 2},
+            {"type": "unfilled", "name": "maya", "task": "dishes", "bids": 2, "reason": "2 agents bid, but every human passed."},
         )
         self.assertEqual(summary, "dishes: nobody could take it this time. 2 agents bid, but every human passed.")
 
-    def test_no_bids_at_all_says_so(self):
+    def _nobody_bids(self):
         # both helpers' agents sit out: bids over a tiny cap, humans say no to bidding anyway
         self.hub.save_agent(self.hub.agent("jordan").with_cap(1))
         self.hub.save_agent(self.hub.agent("priya").with_cap(1))
         self.fake.answers = {2: ["NO"], 3: ["NO"]}
+
+    def test_no_bids_and_nobody_less_busy_says_so_without_numbers(self):
+        # maya busy 2 is "low", jordan is low and priya medium: nobody is in a lower band than maya
+        self._nobody_bids()
+        summary = run(self.hub.cubbie_bailout(self.hub.agent("maya"), busy=2, tasks=["dishes"]))
+        self.assertEqual(
+            self.fake.events[-1],
+            {"type": "unfilled", "name": "maya", "task": "dishes", "bids": 0, "reason": "nobody's less busy than Maya this week."},
+        )
+        self.assertEqual(summary, "dishes: nobody could take it this time. nobody's less busy than you this week.")
+        self.assertNotRegex(str(self.fake.events[-1]["reason"]), r"\d")
+
+    def test_no_bids_but_someone_less_busy_blames_the_caps(self):
+        # maya busy 9 is "high" and the helpers are low/medium, so "nobody's less busy" would be a lie
+        self._nobody_bids()
         summary = run(self.hub.cubbie_bailout(self.hub.agent("maya"), busy=9, tasks=["dishes"]))
         self.assertEqual(
             self.fake.events[-1],
-            {"type": "unfilled", "name": "maya", "task": "dishes", "bids": 0},
+            {"type": "unfilled", "name": "maya", "task": "dishes", "bids": 0, "reason": "every agent's bid was over its human's limit."},
         )
-        self.assertEqual(summary, "dishes: nobody could take it this time. no agent bid.")
+        self.assertEqual(summary, "dishes: nobody could take it this time. every agent's bid was over its human's limit.")
 
     def test_unfilled_line_never_carries_a_busy_number(self):
         self.fake.answers = {2: ["NO"], 3: ["NO"]}
@@ -230,6 +245,24 @@ class UnfilledTaskTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class UnfilledReasonTests(unittest.TestCase):
+    """The reason is plain code over public facts: the bid count and the busy bands already on the floor."""
+
+    def test_no_other_agents(self):
+        self.assertEqual(unfilled_reason(0, "low", [], "Maya"), "nobody else has joined the house yet.")
+
+    def test_no_bids_and_every_helper_at_least_as_busy(self):
+        self.assertEqual(unfilled_reason(0, "medium", ["medium", "high"], "Maya"), "nobody's less busy than Maya this week.")
+        self.assertEqual(unfilled_reason(0, "low", ["low"], "you"), "nobody's less busy than you this week.")
+
+    def test_no_bids_with_a_less_busy_helper_is_about_caps(self):
+        self.assertEqual(unfilled_reason(0, "high", ["low", "high"], "Maya"), "every agent's bid was over its human's limit.")
+
+    def test_bids_but_every_human_passed(self):
+        self.assertEqual(unfilled_reason(1, "high", ["low"], "Maya"), "1 agent bid, but every human passed.")
+        self.assertEqual(unfilled_reason(3, "low", ["low", "low", "low"], "Maya"), "3 agents bid, but every human passed.")
 
 
 class GuardTests(unittest.TestCase):

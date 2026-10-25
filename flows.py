@@ -26,15 +26,25 @@ PostFn = Callable[[dict], Awaitable[None]]
 SEED_CAP = 20.0  # high enough that the scripted demo never trips a cap check; /me cap still changes it
 
 
-def unfilled_reason(bids: int) -> str:
-    """Why a task went unfilled, as a count only. The count is already public on the floor as bid/declined lines.
+BAND_ORDER = {"low": 0, "medium": 1, "high": 2}
 
-    The auction never compares busy levels, so the reason is never about busy: a task goes
-    unfilled either because no agent bid (every one sat out a cap check) or because the
-    human behind every bidder said no, didn't answer, or couldn't be understood at gate 2.
+
+def unfilled_reason(bids: int, requester_band: str, helper_bands: list[str], who: str) -> str:
+    """Why a task went unfilled, in plain words and with nothing private in it.
+
+    Built only from what the floor already saw: how many bid lines there were and everyone's
+    busy band. The only way an agent ends up not bidding is a cap check its human waved off,
+    and bids rise with busy, so when nobody bid and nobody sits in a lower band than the
+    requester, "nobody's less busy" is the honest reason. When someone less busy still didn't
+    bid, the caps are the reason. The exact busy numbers never come into it.
+    `who` is how the requester is named in the sentence: their name on the floor, "you" in their DM.
     """
+    if not helper_bands:
+        return "nobody else has joined the house yet."
     if bids == 0:
-        return "no agent bid."
+        if all(BAND_ORDER[band] >= BAND_ORDER[requester_band] for band in helper_bands):
+            return f"nobody's less busy than {who} this week."
+        return "every agent's bid was over its human's limit."
     noun = "agent" if bids == 1 else "agents"
     return f"{bids} {noun} bid, but every human passed."
 
@@ -46,6 +56,11 @@ def seed_profiles(ids: dict[str, int]) -> list[Agent]:
         Agent(name="jordan", discord_id=ids["jordan"], busy=3, dislikes={"trash": 2, "dishes": 4}, reasons="chill week", availability="evenings", cap=SEED_CAP),
         Agent(name="priya", discord_id=ids["priya"], busy=5, dislikes={"dishes": 6, "trash": 7}, reasons="lab report due fri", availability="afternoons", cap=SEED_CAP),
     ]
+
+
+def _capitalized(name: str) -> str:
+    """Upper-case only the first letter, leaving the rest as the roommate spelled it."""
+    return name[:1].upper() + name[1:]
 
 
 class Hub:
@@ -253,9 +268,18 @@ class Hub:
         return await self._unfilled(requester, task, len(bids))
 
     async def _unfilled(self, requester: Agent, task: str, bid_count: int) -> str:
-        """One floor line saying the task has no taker and why (counts only), then the same for the requester's DM."""
-        await self._post_and_log(requester.name, {"type": "unfilled", "name": requester.name, "task": task, "bids": bid_count})
-        return f"{task}: nobody could take it this time. {unfilled_reason(bid_count)}"
+        """One floor line saying the task has no taker and why, then the same reason for the requester's DM.
+
+        The reason is chosen here, in plain code, and the floor line only restates it.
+        """
+        requester = self.agent(requester.name) or requester  # the saved copy has the current busy
+        helper_bands = [busy_band(a.busy) for a in self.agents() if a.name != requester.name]
+        band = busy_band(requester.busy)
+        floor_reason = unfilled_reason(bid_count, band, helper_bands, _capitalized(requester.name))
+        await self._post_and_log(
+            requester.name, {"type": "unfilled", "name": requester.name, "task": task, "bids": bid_count, "reason": floor_reason}
+        )
+        return f"{task}: nobody could take it this time. {unfilled_reason(bid_count, band, helper_bands, 'you')}"
 
     def _open_favor(self, task: str, requester: str, helper: str, price: float) -> None:
         new_open = {**self.state["open"], task: {"requester": requester, "helper": helper, "price": price}}
