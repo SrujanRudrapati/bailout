@@ -3,6 +3,7 @@
 Slash commands: /seed, /me busy|dislike|cap, /bailout, /done, /ledger, /shared
 Prefix command:  !advance <name> <busy>   (demo: trigger the payback rule)
 Cubbie bridge:   a webhook line in #agent-floor (see bridge.py) starts a bailout with gate 1 skipped
+ntfy relay:      the same line published to an ntfy.sh topic (see relay.py), for when Discord blocks the webhook
 
 All the logic lives in flows.py. This file just maps Discord to it.
 """
@@ -12,12 +13,14 @@ import logging
 import os
 from typing import Optional
 
+import aiohttp
 import discord
 from discord import app_commands
 from discord.ext import commands
 from dotenv import load_dotenv
 
-from bridge import BridgeError, accept_bridge_message, is_bridge_webhook
+import relay
+from bridge import BridgeError, BridgeRequest, accept_bridge_message, is_bridge_webhook
 from flows import Hub
 from gates import ask_by_dm
 from llm import floor_message, verify_photo
@@ -32,6 +35,7 @@ GUILD_ID = os.environ.get("GUILD_ID")  # optional, makes slash commands show up 
 FLOOR_CHANNEL = os.environ.get("FLOOR_CHANNEL", "agent-floor")
 STATE_PATH = os.environ.get("STATE_PATH", "state.json")
 BRIDGE_WEBHOOK_ID = os.environ.get("BRIDGE_WEBHOOK_ID", "").strip() or None  # the only webhook the bridge trusts
+RELAY_TOPIC = os.environ.get("RELAY_TOPIC", "").strip() or None  # ntfy.sh topic the bot polls; it is a secret, never logged
 
 if not DISCORD_TOKEN:
     raise SystemExit("DISCORD_TOKEN is missing. copy .env.example to .env and fill it in.")
@@ -87,6 +91,9 @@ async def on_ready():
     else:
         await bot.tree.sync()
     log.info("logged in as %s, floor channel = #%s", bot.user, FLOOR_CHANNEL)
+    if RELAY_TOPIC:
+        run_in_background(relay_loop(RELAY_TOPIC))
+        log.info("relay: polling ntfy every %ss", relay.RELAY_POLL_SECONDS)
 
 
 def my_agent(interaction: discord.Interaction):
@@ -237,8 +244,13 @@ async def on_bridge_message(message: discord.Message):
         # the rejected line goes to the bot log only (never the floor), truncated so a bad actor can't flood it
         log.info("ignoring bridge message %s: %s (content %r)", message.id, why, message.content[:120])
         return
+    start_cubbie_bailout(request, f"message {message.id}")
+
+
+def start_cubbie_bailout(request: BridgeRequest, origin: str) -> None:
+    """Run the gate-1-skipped bailout for a bridge request (webhook or relay) in the background."""
     agent = hub.agent_for_user(request.user_id)
-    log.info("cubbie bridge: bailout for %s on %s (message %s)", agent.name, ", ".join(request.tasks), message.id)
+    log.info("cubbie bridge: bailout for %s on %s (%s)", agent.name, ", ".join(request.tasks), origin)
     _bridge_in_flight.add(request.user_id)
 
     async def run():
@@ -267,6 +279,44 @@ async def delete_bridge_message(message: discord.Message) -> None:
         await message.delete()
     except discord.HTTPException as exc:
         log.warning("could not delete bridge message %s: %s", message.id, exc)
+
+
+# ---------------------------------------------------------------- ntfy relay
+
+
+async def relay_loop(topic: str) -> None:
+    """Poll the ntfy topic until the bot closes. One failed poll is logged and retried next tick."""
+    inbox = relay.RelayInbox()
+    async with aiohttp.ClientSession() as session:
+        while not bot.is_closed():
+            await poll_relay_once(session, topic, inbox)
+            await asyncio.sleep(relay.RELAY_POLL_SECONDS)
+
+
+async def poll_relay_once(session: aiohttp.ClientSession, topic: str, inbox: relay.RelayInbox) -> None:
+    try:
+        events = await relay.fetch_relay_events(session, topic, inbox.last_id)
+    except relay.RelayError as why:
+        log.warning("relay: poll failed: %s", relay.scrub(str(why), topic))
+        return
+    for event in events:
+        handle_relay_event(inbox, event)
+
+
+def handle_relay_event(inbox: relay.RelayInbox, event: dict) -> None:
+    """One ntfy event: same checks as a webhook line, plus duplicate and stale filtering. Never logs the topic."""
+    message_id = event.get("id")
+    log.info("relay: received message %s", message_id)
+    try:
+        request = inbox.accept(event, hub.agent_for_user)
+        if request.user_id in _bridge_in_flight:
+            raise BridgeError(f"a cubbie bailout for user {request.user_id} is already running")
+    except BridgeError as why:
+        content = str(event.get("message", ""))[:120]
+        log.info("relay: rejected message %s: %s (content %r)", message_id, why, content)
+        return
+    log.info("relay: parsed message %s for user %s", message_id, request.user_id)
+    start_cubbie_bailout(request, f"relay message {message_id}")
 
 
 async def dm_user(discord_id: int, text: str) -> None:
