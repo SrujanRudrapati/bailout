@@ -50,7 +50,7 @@ class TemplateTests(unittest.TestCase):
     def test_every_event_type_has_a_template(self):
         self.assertEqual(
             set(FLOOR_EVENT_TYPES),
-            {"request", "cubbie_request", "bid", "cap_check", "passed", "awarded", "declined", "completed", "payback_request", "payback_done"},
+            {"request", "cubbie_request", "bid", "cap_check", "passed", "awarded", "declined", "unfilled", "completed", "payback_request", "payback_done"},
         )
 
     def test_cubbie_request_template_shows_only_the_band(self):
@@ -74,6 +74,23 @@ class TemplateTests(unittest.TestCase):
 
     def test_completed_template(self):
         self.assertEqual(_template_line(COMPLETED), "jordan finished dishes for maya. +9.0 credits to jordan.")
+
+    def test_unfilled_template_gives_the_count_reason(self):
+        event = {"type": "unfilled", "name": "maya", "task": "dishes", "bids": 2}
+        self.assertEqual(_template_line(event), "nobody's taking dishes for maya this time: 2 agents bid, but every human passed.")
+
+    def test_unfilled_template_with_no_bids(self):
+        event = {"type": "unfilled", "name": "maya", "task": "dishes", "bids": 0}
+        self.assertEqual(_template_line(event), "nobody's taking dishes for maya this time: no agent bid.")
+
+    def test_unfilled_template_singular_bidder(self):
+        event = {"type": "unfilled", "name": "maya", "task": "trash", "bids": 1}
+        self.assertEqual(_template_line(event), "nobody's taking trash for maya this time: 1 agent bid, but every human passed.")
+
+    def test_unfilled_rejects_a_busy_comparison(self):
+        # the code never compares busy levels, so a line claiming one is an invention
+        event = {"type": "unfilled", "name": "maya", "task": "dishes", "bids": 2}
+        self.assertFalse(validate_line("nobody's less busy than maya this week, busy 2.", event))
 
     def test_no_ledger_event_type(self):
         self.assertNotIn("ledger", FLOOR_EVENT_TYPES)
@@ -107,6 +124,7 @@ class TemplateTests(unittest.TestCase):
             {"type": "passed", "name": "priya", "task": "trash"},
             AWARDED,
             {"type": "declined", "name": "jordan", "task": "dishes"},
+            {"type": "unfilled", "name": "maya", "task": "dishes", "bids": 2},
             COMPLETED,
             {"type": "payback_request", "name": "jordan", "busy_band": "high", "debtor": "maya"},
             {"type": "payback_done", "name": "maya", "task": "trash", "price": 5.0, "creditor": "jordan"},

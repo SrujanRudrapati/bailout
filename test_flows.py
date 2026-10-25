@@ -185,6 +185,49 @@ class DoneAndPaybackTests(unittest.TestCase):
         self.assertEqual([f["helper"] for f in self.hub.state["open"].values()], [])
 
 
+class UnfilledTaskTests(unittest.TestCase):
+    """When no one ends up taking a task, the floor and the requester are told why, in counts only."""
+
+    def setUp(self):
+        self.fake = FakeDiscord()
+        self.hub, self.path = make_hub(self.fake)
+
+    def tearDown(self):
+        os.remove(self.path)
+
+    def test_every_human_passing_posts_an_unfilled_line_with_counts(self):
+        self.fake.answers = {2: ["NO"], 3: ["NO"]}
+        summary = run(self.hub.cubbie_bailout(self.hub.agent("maya"), busy=2, tasks=["dishes"]))
+        self.assertEqual(
+            self.fake.events[-1],
+            {"type": "unfilled", "name": "maya", "task": "dishes", "bids": 2},
+        )
+        self.assertEqual(summary, "dishes: nobody could take it this time. 2 agents bid, but every human passed.")
+
+    def test_no_bids_at_all_says_so(self):
+        # both helpers' agents sit out: bids over a tiny cap, humans say no to bidding anyway
+        self.hub.save_agent(self.hub.agent("jordan").with_cap(1))
+        self.hub.save_agent(self.hub.agent("priya").with_cap(1))
+        self.fake.answers = {2: ["NO"], 3: ["NO"]}
+        summary = run(self.hub.cubbie_bailout(self.hub.agent("maya"), busy=9, tasks=["dishes"]))
+        self.assertEqual(
+            self.fake.events[-1],
+            {"type": "unfilled", "name": "maya", "task": "dishes", "bids": 0},
+        )
+        self.assertEqual(summary, "dishes: nobody could take it this time. no agent bid.")
+
+    def test_unfilled_line_never_carries_a_busy_number(self):
+        self.fake.answers = {2: ["NO"], 3: ["NO"]}
+        run(self.hub.cubbie_bailout(self.hub.agent("maya"), busy=2, tasks=["dishes"]))
+        unfilled = self.fake.events[-1]
+        self.assertNotIn("busy", str(unfilled))
+        self.assertNotIn("busy_band", unfilled)
+
+    def test_an_awarded_task_posts_no_unfilled_line(self):
+        run(self.hub.cubbie_bailout(self.hub.agent("maya"), busy=2, tasks=["dishes"]))
+        self.assertNotIn("unfilled", [e["type"] for e in self.fake.events])
+
+
 if __name__ == "__main__":
     unittest.main()
 

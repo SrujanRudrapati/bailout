@@ -26,6 +26,19 @@ PostFn = Callable[[dict], Awaitable[None]]
 SEED_CAP = 20.0  # high enough that the scripted demo never trips a cap check; /me cap still changes it
 
 
+def unfilled_reason(bids: int) -> str:
+    """Why a task went unfilled, as a count only. The count is already public on the floor as bid/declined lines.
+
+    The auction never compares busy levels, so the reason is never about busy: a task goes
+    unfilled either because no agent bid (every one sat out a cap check) or because the
+    human behind every bidder said no, didn't answer, or couldn't be understood at gate 2.
+    """
+    if bids == 0:
+        return "no agent bid."
+    noun = "agent" if bids == 1 else "agents"
+    return f"{bids} {noun} bid, but every human passed."
+
+
 def seed_profiles(ids: dict[str, int]) -> list[Agent]:
     """The three demo roommates. ids maps lowercase name -> discord id."""
     return [
@@ -214,7 +227,8 @@ class Hub:
         return None
 
     async def _auction_task(self, requester: Agent, task: str) -> str:
-        remaining = await self._collect_bids(requester, task)
+        bids = await self._collect_bids(requester, task)
+        remaining = bids
         while remaining:
             result = run_auction(remaining)
             winner = self.agent(result.winner)
@@ -228,7 +242,12 @@ class Hub:
                 return f"{task}: {winner.name} for {result.price} credits (settles on /done {task})"
             await self._post_and_log(winner.name, {"type": "declined", "name": winner.name, "task": task})
             remaining = [b for b in remaining if b.name != winner.name]
-        return f"{task}: nobody could take it this time."
+        return await self._unfilled(requester, task, len(bids))
+
+    async def _unfilled(self, requester: Agent, task: str, bid_count: int) -> str:
+        """One floor line saying the task has no taker and why (counts only), then the same for the requester's DM."""
+        await self._post_and_log(requester.name, {"type": "unfilled", "name": requester.name, "task": task, "bids": bid_count})
+        return f"{task}: nobody could take it this time. {unfilled_reason(bid_count)}"
 
     def _open_favor(self, task: str, requester: str, helper: str, price: float) -> None:
         new_open = {**self.state["open"], task: {"requester": requester, "helper": helper, "price": price}}

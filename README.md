@@ -97,6 +97,9 @@ As Maya (busy 9, two midterms):
 - Jordan wins dishes (5.2 cost) but earns Priya's cost (9.0 credits). Jordan gets a DM:
   "you won dishes for 9.0 credits. take it?" -> ✅  (gate 2). Try ❌ once: Priya gets asked next.
   The floor says "jordan's taking dishes for 9.0 credits." Nothing is finished yet.
+  If Priya says ❌ too, the floor says "nobody's taking dishes for maya this time: 2 agents bid,
+  but every human passed." and Maya's DM says the same. The count is the only reason given:
+  the auction never compares busy levels, so the line never claims it did.
 - Same for trash.
 ```
 /shared                                  # exactly what each agent sent, and what it kept
