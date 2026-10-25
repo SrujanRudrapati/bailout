@@ -181,8 +181,16 @@ class Hub:
         await self._post_and_log(requester.name, request)
         results = [f"skipped {t}, already has an open favor" for t in already_open]
         for task in tasks:
-            results.append(await self._auction_task(requester, task))
+            results.append(await self._auction_task_safely(requester, task))
         return "\n".join(results)
+
+    async def _auction_task_safely(self, requester: Agent, task: str) -> str:
+        """One task's auction. If it blows up, the error is logged and reported, and the next task still runs."""
+        try:
+            return await self._auction_task(requester, task)
+        except Exception:  # noqa: BLE001  (anything: a Discord error on one task must not eat the rest of the request)
+            log.exception("auction for %s (asked by %s) failed, moving on to the next task", task, requester.name)
+            return f"{task}: something went wrong mid-auction, check the bot logs. the other tasks still ran."
 
     async def _collect_bids(self, requester: Agent, task: str) -> list[Bid]:
         bids = []

@@ -351,6 +351,33 @@ class CubbieBailoutTests(unittest.TestCase):
         self.assertEqual(request, {"type": "cubbie_request", "name": "maya", "busy_band": "high", "tasks": ["dishes", "trash"]})
         self.assertNotIn("8", str(request))
 
+    def test_every_task_in_the_request_is_auctioned(self):
+        summary = run(self.hub.cubbie_bailout(self.hub.agent("maya"), busy=9, tasks=["dishes", "trash"]))
+        self.assertEqual(self.hub.open_favor("dishes")["helper"], "jordan")
+        self.assertEqual(self.hub.open_favor("trash")["helper"], "jordan")
+        awarded = [e["task"] for e in self.fake.events if e["type"] == "awarded"]
+        self.assertEqual(awarded, ["dishes", "trash"])
+        self.assertEqual(summary.splitlines()[0][:7], "dishes:")
+        self.assertEqual(summary.splitlines()[1][:6], "trash:")
+
+    def test_a_task_that_blows_up_does_not_stop_the_next_one(self):
+        real_post = self.fake.post
+
+        async def flaky_post(event):
+            if event["type"] == "awarded" and event["task"] == "dishes":
+                raise RuntimeError("discord hiccup")
+            await real_post(event)
+
+        self.hub.post = flaky_post
+        with self.assertLogs("bailout.flows", level="ERROR") as captured:
+            summary = run(self.hub.cubbie_bailout(self.hub.agent("maya"), busy=9, tasks=["dishes", "trash"]))
+        self.assertEqual(self.hub.open_favor("trash")["helper"], "jordan")
+        self.assertIn("trash", [e["task"] for e in self.fake.events if e["type"] == "awarded"])
+        lines = summary.splitlines()
+        self.assertIn("went wrong", lines[0])
+        self.assertIn("trash: jordan", lines[1])
+        self.assertTrue(any("dishes" in msg for msg in captured.output))
+
     def test_already_open_tasks_are_skipped_without_posting(self):
         run(self.hub.cubbie_bailout(self.hub.agent("maya"), busy=9, tasks=["dishes"]))
         self.fake.events.clear()
