@@ -4,3 +4,7 @@ __pycache__/
 *.pyc
 state.json
 .DS_Store
+.venv/
+state.json
+__pycache__/
+.DS_Store
