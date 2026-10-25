@@ -101,3 +101,13 @@ class PaybackTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class BidTests(unittest.TestCase):
+    def test_auction_works_on_plain_bids(self):
+        from market import Bid
+
+        bids = [Bid("jordan", 5.2, 0.0), Bid("priya", 9.0, 0.0)]
+        result = run_auction(bids)
+        self.assertEqual(result.winner, "jordan")
+        self.assertEqual(result.price, 9.0)

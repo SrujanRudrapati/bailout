@@ -86,3 +86,16 @@ def payback_order(ledger: dict[str, float], name: str, busy: int) -> list[str]:
     debtors = [(other, bal) for other, bal in ledger.items() if other != name and bal < 0]
     debtors.sort(key=lambda pair: (pair[1], pair[0]))  # most negative first
     return [other for other, _ in debtors]
+
+
+@dataclass(frozen=True)
+class Bid:
+    """A bid as the auction sees it: just a name, a number of credits and a balance.
+
+    The bot builds these from Agent.bid(), so the auction never sees raw dislike
+    or busy scores. run_auction() accepts Bidders or Bids, it only needs .cost.
+    """
+
+    name: str
+    cost: float
+    balance: float
