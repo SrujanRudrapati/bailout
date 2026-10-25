@@ -3,6 +3,6 @@ network:
   runtime:
     - discord.com
 secrets:
-  - env: BAILOUT_WEBHOOK_SECRET
+  - env: BAILOUT_HOOK_TOKEN
     label: Bailout webhook URL
     help_url: https://support.discord.com/hc/en-us/articles/228383668

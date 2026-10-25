@@ -5,10 +5,10 @@ The Bailout bot only accepts this exact shape, from this one webhook:
 
     bailout_request user=<discord_user_id> busy=<1-10> tasks=<task1,task2> source=cubbie
 
-The webhook URL comes from the environment variable BAILOUT_WEBHOOK_SECRET and is never
+The webhook URL comes from the environment variable BAILOUT_HOOK_TOKEN and is never
 printed. Run it as Cubbie's instructions say:
 
-    BAILOUT_WEBHOOK_SECRET="$BAILOUT_WEBHOOK_SECRET" python3 scripts/post.py --user <id> --busy <X> --tasks dishes,trash
+    BAILOUT_HOOK_TOKEN="$BAILOUT_HOOK_TOKEN" python3 scripts/post.py --user <id> --busy <X> --tasks dishes,trash
 
 Add --dry-run to print the line without sending it.
 Exit codes: 0 sent, 2 bad arguments, 3 webhook not set or not a Discord webhook, 4 post failed.
@@ -24,7 +24,7 @@ import re
 import sys
 from urllib import error, request
 
-ENV_VAR = "BAILOUT_WEBHOOK_SECRET"
+ENV_VAR = "BAILOUT_HOOK_TOKEN"
 WEBHOOK_PREFIX = "https://discord.com/api/webhooks/"
 TIMEOUT_SECONDS = 15
 BUSY_MIN, BUSY_MAX = 1, 10

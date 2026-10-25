@@ -64,11 +64,11 @@ is that nobody has to explain why they're busy.
    right-click your name > copy user id. it's a long number)" and remember it for next time.
    It's digits only; if what they send isn't, ask again once.
 
-6. Post the request. The house's webhook URL is saved in Cubbie as `BAILOUT_WEBHOOK_SECRET`
+6. Post the request. The house's webhook URL is saved in Cubbie as `BAILOUT_HOOK_TOKEN`
    (see Key below). Run, from this Skill's folder:
 
    ```bash
-   BAILOUT_WEBHOOK_SECRET="$BAILOUT_WEBHOOK_SECRET" python3 scripts/post.py --user <id> --busy <X> --tasks <dishes,trash>
+   BAILOUT_HOOK_TOKEN="$BAILOUT_HOOK_TOKEN" python3 scripts/post.py --user <id> --busy <X> --tasks <dishes,trash>
    ```
 
    It posts the one line `bailout_request user=<id> busy=<X> tasks=<tasks> source=cubbie`
@@ -78,7 +78,7 @@ is that nobody has to explain why they're busy.
 
 ## Key
 
-This Skill needs the house's Bailout webhook URL, saved in Cubbie as `BAILOUT_WEBHOOK_SECRET`.
+This Skill needs the house's Bailout webhook URL, saved in Cubbie as `BAILOUT_HOOK_TOKEN`.
 Whoever runs the house bot makes it in Discord: #agent-floor > Edit channel > Integrations >
 Webhooks > New Webhook > Copy URL (how-to: https://support.discord.com/hc/en-us/articles/228383668),
 and shares it with the roommates. If it isn't saved yet, send the student the secure page to

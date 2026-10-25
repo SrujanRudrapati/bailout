@@ -110,17 +110,17 @@ class CommandLineTest(unittest.TestCase):
     def test_missing_webhook_exits_3(self):
         code, _, err = self.run_main(["--user", "42", "--busy", "5", "--tasks", "dishes"], {})
         self.assertEqual(code, 3)
-        self.assertIn("BAILOUT_WEBHOOK_SECRET", err)
+        self.assertIn("BAILOUT_HOOK_TOKEN", err)
 
     def test_bad_arguments_exit_2(self):
-        code, _, err = self.run_main(["--user", "me", "--busy", "5", "--tasks", "dishes"], {"BAILOUT_WEBHOOK_SECRET": HOOK})
+        code, _, err = self.run_main(["--user", "me", "--busy", "5", "--tasks", "dishes"], {"BAILOUT_HOOK_TOKEN": HOOK})
         self.assertEqual(code, 2)
         self.assertIn("user", err)
 
     def test_dry_run_prints_the_line_and_does_not_post(self):
         with mock.patch.object(post, "send", side_effect=AssertionError("should not post")):
             code, out, _ = self.run_main(["--user", "42", "--busy", "5", "--tasks", "dishes", "--dry-run"],
-                                         {"BAILOUT_WEBHOOK_SECRET": HOOK})
+                                         {"BAILOUT_HOOK_TOKEN": HOOK})
         self.assertEqual(code, 0)
         self.assertIn("bailout_request user=42 busy=5 tasks=dishes source=cubbie", out)
 
@@ -132,7 +132,7 @@ class CommandLineTest(unittest.TestCase):
     def test_success_prints_sent_and_exits_0(self):
         with mock.patch.object(post, "send", return_value=None):
             code, out, _ = self.run_main(["--user", "42", "--busy", "9", "--tasks", "dishes,trash"],
-                                         {"BAILOUT_WEBHOOK_SECRET": HOOK})
+                                         {"BAILOUT_HOOK_TOKEN": HOOK})
         self.assertEqual(code, 0)
         self.assertIn("sent", out.lower())
         self.assertNotIn(HOOK, out)
@@ -140,7 +140,7 @@ class CommandLineTest(unittest.TestCase):
     def test_post_failure_exits_4(self):
         with mock.patch.object(post, "send", side_effect=post.PostError("Discord said HTTP 404")):
             code, _, err = self.run_main(["--user", "42", "--busy", "9", "--tasks", "dishes"],
-                                         {"BAILOUT_WEBHOOK_SECRET": HOOK})
+                                         {"BAILOUT_HOOK_TOKEN": HOOK})
         self.assertEqual(code, 4)
         self.assertIn("404", err)
 
