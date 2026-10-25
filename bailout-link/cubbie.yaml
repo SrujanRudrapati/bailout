@@ -1,8 +1,8 @@
 cubbie: 1
 network:
   runtime:
-    - discord.com
+    - ntfy.sh
 secrets:
-  - env: BAILOUT_HOOK_TOKEN
-    label: Bailout webhook URL
-    help_url: https://support.discord.com/hc/en-us/articles/228383668
+  - env: BAILOUT_RELAY_TOKEN
+    label: Bailout relay topic
+    help_url: https://docs.ntfy.sh/publish/

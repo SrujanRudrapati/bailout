@@ -24,10 +24,14 @@ asks the house for cover.
 
 ## What leaves the phone
 
-Exactly one line goes to Discord: the student's Discord user id, the busy number (1-10), the
-chore names, and the word cubbie. No course names, no assignment names, no grades, no due
-dates. Say that plainly when you ask for the ok, because the whole point of the house agents
-is that nobody has to explain why they're busy.
+Exactly one line goes out: the student's Discord user id, the busy number (1-10), the chore
+names, and the word cubbie. No course names, no assignment names, no grades, no due dates.
+Say that plainly when you ask for the ok, because the whole point of the house agents is
+that nobody has to explain why they're busy.
+
+The line travels through a relay topic on ntfy.sh (Discord won't take webhook posts from
+Cubbie's servers). The house's Bailout bot polls that topic and picks the line up within a
+few seconds. The topic name is the house's secret; whoever knows it can post as the house.
 
 ## Steps
 
@@ -64,34 +68,35 @@ is that nobody has to explain why they're busy.
    right-click your name > copy user id. it's a long number)" and remember it for next time.
    It's digits only; if what they send isn't, ask again once.
 
-6. Post the request. The house's webhook URL is saved in Cubbie as `BAILOUT_HOOK_TOKEN`
+6. Post the request. The house's relay topic is saved in Cubbie as `BAILOUT_RELAY_TOKEN`
    (see Key below). Run, from this Skill's folder:
 
    ```bash
-   BAILOUT_HOOK_TOKEN="$BAILOUT_HOOK_TOKEN" python3 scripts/post.py --user <id> --busy <X> --tasks <dishes,trash>
+   BAILOUT_RELAY_TOKEN="$BAILOUT_RELAY_TOKEN" python3 scripts/post.py --user <id> --busy <X> --tasks <dishes,trash>
    ```
 
-   It posts the one line `bailout_request user=<id> busy=<X> tasks=<tasks> source=cubbie`
-   and prints a short result. Exit code 0 means it went.
+   It publishes the one line `bailout_request user=<id> busy=<X> tasks=<tasks> source=cubbie`
+   as plain text to `https://ntfy.sh/<topic>` and prints a short result. Exit code 0 means it went.
 
 7. Text: "sent. your roommates' agents are bidding now. check #agent-floor."
 
 ## Key
 
-This Skill needs the house's Bailout webhook URL, saved in Cubbie as `BAILOUT_HOOK_TOKEN`.
-Whoever runs the house bot makes it in Discord: #agent-floor > Edit channel > Integrations >
-Webhooks > New Webhook > Copy URL (how-to: https://support.discord.com/hc/en-us/articles/228383668),
-and shares it with the roommates. If it isn't saved yet, send the student the secure page to
-save it. Never ask them to paste it in the chat, it's a password for posting as the house.
-The script only ever sends it to discord.com.
+This Skill needs the house's relay topic name, saved in Cubbie as `BAILOUT_RELAY_TOKEN`.
+Whoever runs the house bot picks a long random name (for example `bailout-` plus 16 random
+letters and digits), puts it in the bot's `.env` as `RELAY_TOPIC`, and shares it with the
+roommates. It is the bare name only: letters, digits, `-` and `_`, no `https://ntfy.sh/` in
+front. If it isn't saved yet, send the student the secure page to save it. Never ask them to
+paste it in the chat, it's a password for posting as the house. The script only ever sends
+it to ntfy.sh.
 
 ## When something fails
 
 | What happened | What to text |
 | --- | --- |
 | Canvas not connected | "connect Canvas first so I can see how busy your week is, then say bailout again" |
-| `post.py` exit 3 (webhook not set or not a Discord webhook URL) | "the house webhook isn't set up yet. ask whoever runs the bailout bot for the webhook URL, then save it when I send the secure link" |
-| `post.py` exit 4 (post failed) | "couldn't reach Discord right now, nothing was sent. try again in a bit?" Try once more if they say yes, not more. |
+| `post.py` exit 3 (relay topic not set or not a plain topic name) | "the house relay isn't set up yet. ask whoever runs the bailout bot for the relay topic name, then save it when I send the secure link" |
+| `post.py` exit 4 (post failed) | "couldn't reach the house relay right now, nothing was sent. try again in a bit?" Try once more if they say yes, not more. |
 | `post.py` exit 2 (bad id or chore names) | fix what the error says (digits-only id, letters-only chores, max five) and run again |
 | The student says no at step 4 | "ok, nothing sent" |
 
@@ -106,6 +111,6 @@ what the student should see; don't pad them with the assignment list or the math
 ## Files
 
 - `scripts/busy.py` - busy level from the Canvas items. Standard library only.
-- `scripts/post.py` - posts the one line to the webhook. Standard library only.
+- `scripts/post.py` - publishes the one line to the ntfy.sh relay topic. Standard library only.
 - `assets/sample_canvas.json` - a fake week for `--sample`.
 - `tests/` - `python3 -m unittest discover -s tests` from this folder.
