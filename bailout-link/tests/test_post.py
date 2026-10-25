@@ -81,6 +81,48 @@ class SendTest(unittest.TestCase):
         self.assertEqual(seen["type"], "application/json")
         self.assertGreater(seen["timeout"], 0)
 
+    def test_sends_a_bailout_link_user_agent(self):
+        # Discord's edge answers 403 to urllib's default "Python-urllib/3.x" agent.
+        seen = {}
+
+        class Response:
+            status = 204
+            def __enter__(self): return self
+            def __exit__(self, *exc): return False
+
+        def fake_urlopen(request, timeout):
+            seen["agent"] = request.get_header("User-agent")
+            return Response()
+
+        with mock.patch.object(post.request, "urlopen", fake_urlopen):
+            post.send(HOOK, "x")
+        self.assertEqual(seen["agent"], "BailoutLink (https://github.com/SrujanRudrapati/bailout, 1.0)")
+
+    def test_http_error_includes_status_and_start_of_body(self):
+        body = b'{"message": "error code: 1010"}' + b"x" * 500
+
+        def boom(request, timeout):
+            raise post.error.HTTPError(HOOK, 403, "Forbidden", {}, io.BytesIO(body))
+
+        with mock.patch.object(post.request, "urlopen", boom):
+            with self.assertRaises(post.PostError) as caught:
+                post.send(HOOK, "x")
+        message = str(caught.exception)
+        self.assertIn("403", message)
+        self.assertIn("error code: 1010", message)
+        self.assertIn("x" * (200 - len(b'{"message": "error code: 1010"}')), message)
+        self.assertNotIn("x" * 201, message)
+
+    def test_http_error_body_never_echoes_the_url(self):
+        def boom(request, timeout):
+            raise post.error.HTTPError(HOOK, 400, "Bad Request", {}, io.BytesIO(f"bad {HOOK}".encode()))
+
+        with mock.patch.object(post.request, "urlopen", boom):
+            with self.assertRaises(post.PostError) as caught:
+                post.send(HOOK, "x")
+        self.assertNotIn(HOOK, str(caught.exception))
+        self.assertNotIn("abcDEF-ghi_jkl", str(caught.exception))
+
     def test_http_error_becomes_post_error_without_the_url(self):
         def boom(request, timeout):
             raise post.error.HTTPError(HOOK, 401, "Unauthorized", {}, io.BytesIO(b'{"message":"Invalid Webhook Token"}'))

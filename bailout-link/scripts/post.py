@@ -27,6 +27,9 @@ from urllib import error, request
 ENV_VAR = "BAILOUT_HOOK_TOKEN"
 WEBHOOK_PREFIX = "https://discord.com/api/webhooks/"
 TIMEOUT_SECONDS = 15
+# Discord's edge answers 403 to urllib's default "Python-urllib/3.x" agent.
+USER_AGENT = "BailoutLink (https://github.com/SrujanRudrapati/bailout, 1.0)"
+ERROR_BODY_CHARS = 200
 BUSY_MIN, BUSY_MAX = 1, 10
 MAX_TASKS = 5
 MAX_TASK_LEN = 30
@@ -73,16 +76,30 @@ def check_webhook_url(url: str) -> str:
     return url
 
 
+def error_snippet(exc: error.HTTPError, url: str) -> str:
+    """First ERROR_BODY_CHARS of the response body, with the webhook URL and token scrubbed."""
+    try:
+        text = exc.read().decode("utf-8", errors="replace")
+    except OSError:
+        return ""
+    token = url.rstrip("/").rsplit("/", 1)[-1]
+    text = text.replace(url, "<webhook>").replace(token, "<token>")
+    return " ".join(text.split())[:ERROR_BODY_CHARS]
+
+
 def send(url: str, line: str) -> None:
     body = json.dumps({"content": line}).encode()
-    req = request.Request(url, data=body, method="POST", headers={"Content-Type": "application/json"})
+    headers = {"Content-Type": "application/json", "User-Agent": USER_AGENT}
+    req = request.Request(url, data=body, method="POST", headers=headers)
     try:
         with request.urlopen(req, timeout=TIMEOUT_SECONDS) as response:
             if response.status >= 300:
                 raise PostError(f"Discord answered HTTP {response.status}")
     except error.HTTPError as exc:
         # Never include exc itself or its url: both carry the webhook token.
-        raise PostError(f"Discord answered HTTP {exc.code}") from None
+        message = f"Discord answered HTTP {exc.code}"
+        snippet = error_snippet(exc, url)
+        raise PostError(f"{message}: {snippet}" if snippet else message) from None
     except error.URLError as exc:
         raise PostError(f"could not reach Discord ({exc.reason})") from None
     except OSError as exc:
