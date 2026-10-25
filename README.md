@@ -35,7 +35,11 @@ a list of what stayed private. `test_agent.py` and `test_flows.py` check this.
 - gate 1: before your agent asks the house for anything ("ask for cover on dishes?")
 - gate 2: before the winner is committed ("you won dishes for 9.0 credits. take it?")
 - gate 3: before a favor is called in, both the creditor and the debtor get asked
-- bonus: if a bid would go over your cap, your agent DMs you before bidding
+- bonus: if a bid would go over your cap, your agent DMs you before bidding. While it
+  waits, the floor sees "priya's agent is checking with them before bidding on trash."
+  A ❌, a timeout, or an unreadable reply means "priya's agent passed on trash" and the
+  auction carries on with the other bids. `/seed` sets everyone's cap to 20 so the
+  scripted demo never trips this by accident; `/me cap 5` lowers it if you want to see it.
 
 You can also just type a reply instead of reacting. Claude Haiku reads it and
 returns YES / NO / CAP n / ESCALATE. On ESCALATE the agent doesn't guess, it asks
@@ -64,8 +68,14 @@ vague like "hmm depends" to see the escalation.
 5. `python bot.py`
 6. Run the tests: `python -m unittest -v`
 
-Without an API key the bot still works: floor lines fall back to plain templates and
-typed DM replies only count if they're an obvious yes/no.
+Without an API key the bot still works: floor lines fall back to plain templates.
+Every floor line is one event type (request, bid, cap_check, passed, awarded, declined,
+completed, payback_request, payback_done). The model is told the type and only its share() data, and
+its line is checked before posting: no `$`/dollars/paid/money wording, no numbers that
+aren't in the event, and an `awarded` line can't claim the task is finished. A line that
+fails the check is replaced by the template and logged.
+Confirmation DMs never use the model: tap ✅/❌ or type yes/no (or `cap 5`). You get
+5 minutes to answer; every answer and timeout is logged with the user and message id.
 
 ## 60-second demo script
 
@@ -83,16 +93,17 @@ As Maya (busy 9, two midterms):
 - Maya gets a DM: "ask the house for cover on dishes, trash?" -> ✅  (gate 1)
 - `#agent-floor`: Maya's agent asks for cover. Only "high" shows up, never "9" or "midterms".
 - Jordan's and Priya's agents each post one bid per task (credits + busy band).
-- Jordan wins dishes (5.2 cost) but is paid Priya's cost (9.0). Jordan gets a DM:
+- Jordan wins dishes (5.2 cost) but earns Priya's cost (9.0 credits). Jordan gets a DM:
   "you won dishes for 9.0 credits. take it?" -> ✅  (gate 2). Try ❌ once: Priya gets asked next.
+  The floor says "jordan's taking dishes for 9.0 credits." Nothing is finished yet.
 - Same for trash.
 ```
 /shared                                  # exactly what each agent sent, and what it kept
-/done dishes                             # (as Jordan) credits settle, ledger posts to floor
+/done dishes                             # (as Jordan) floor: "jordan finished dishes for maya. +9.0 credits to jordan." then the ledger block
 /ledger                                  # jordan +9.0, maya -9.0, priya 0.0  (sums to zero)
 !advance jordan 9                        # jordan is now swamped and has credits
 ```
-- `#agent-floor`: Jordan's agent calls in the favor from the biggest debtor (Maya).
+- `#agent-floor`, one line: "jordan's swamped. maya's agent is first in line to help." (Maya owes the most; the amount is never posted.)
 - Jordan gets a DM "call in the favor?" and Maya gets "let your agent offer a task back?" (gate 3)
 - Maya's agent picks the task Maya minds least and offers it back. Settles on `/done`.
 
@@ -113,7 +124,7 @@ As Maya (busy 9, two midterms):
 - `agent.py` - one Agent per person, private profile, `share()`.
 - `llm.py` - Claude calls: floor one-liners, reply parsing, photo check.
 - `flows.py` - the coordination logic (bailout, done, payback, shared log), Discord-free.
-- `gates.py` - DM ask with ✅/❌ or typed reply.
+- `gates.py` - DM ask with ✅/❌ (raw reaction events) or a typed yes/no in the same DM. No LLM.
 - `store.py` - JSON state file.
 - `bot.py` - Discord commands.
 - `test_*.py` - unittest. Run `python -m unittest -v`.

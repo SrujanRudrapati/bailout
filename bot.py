@@ -35,6 +35,9 @@ if not DISCORD_TOKEN:
 
 intents = discord.Intents.default()
 intents.message_content = True  # for !advance and typed DM replies
+intents.dm_messages = True  # typed yes/no replies in DMs
+intents.reactions = True  # ✅/❌ on confirmation DMs
+intents.dm_reactions = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 _background: set[asyncio.Task] = set()  # keep references so tasks aren't garbage collected mid-await
 _synced = False

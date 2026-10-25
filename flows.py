@@ -23,12 +23,15 @@ AskFn = Callable[[int, str], Awaitable[str]]
 PostFn = Callable[[dict], Awaitable[None]]
 
 
+SEED_CAP = 20.0  # high enough that the scripted demo never trips a cap check; /me cap still changes it
+
+
 def seed_profiles(ids: dict[str, int]) -> list[Agent]:
     """The three demo roommates. ids maps lowercase name -> discord id."""
     return [
-        Agent(name="maya", discord_id=ids["maya"], busy=9, reasons="two midterms this week", availability="basically none"),
-        Agent(name="jordan", discord_id=ids["jordan"], busy=3, dislikes={"trash": 2, "dishes": 4}, reasons="chill week", availability="evenings"),
-        Agent(name="priya", discord_id=ids["priya"], busy=5, dislikes={"dishes": 6, "trash": 7}, reasons="lab report due fri", availability="afternoons"),
+        Agent(name="maya", discord_id=ids["maya"], busy=9, reasons="two midterms this week", availability="basically none", cap=SEED_CAP),
+        Agent(name="jordan", discord_id=ids["jordan"], busy=3, dislikes={"trash": 2, "dishes": 4}, reasons="chill week", availability="evenings", cap=SEED_CAP),
+        Agent(name="priya", discord_id=ids["priya"], busy=5, dislikes={"dishes": 6, "trash": 7}, reasons="lab report due fri", availability="afternoons", cap=SEED_CAP),
     ]
 
 
@@ -161,19 +164,30 @@ class Hub:
         return bids
 
     async def _check_cap(self, helper: Agent, task: str) -> Optional[Agent]:
-        """If the bid would be over the human's cap, ask before bidding. Returns None to sit out."""
+        """If the bid would be over the human's cap, ask before bidding. Returns None to sit out.
+
+        The floor is told the agent is checking with its human (so the auction never
+        looks stuck), and a timeout, a decline, or an unreadable answer is a pass.
+        """
         if not helper.bid_exceeds_cap(task):
             return helper
+        await self._post_and_log(helper.name, {"type": "cap_check", "name": helper.name, "task": task})
         answer = await self.ask(
             helper.discord_id,
             f"my bid for **{task}** would be {helper.bid(task)} credits, over your cap of {helper.cap}. bid anyway? ✅/❌ (or reply 'cap 7' to raise the cap)",
         )
+        # re-read in case the human changed busy/dislike while we waited on the DM
+        helper = self.agent(helper.name) or helper
         if answer.startswith("CAP "):
-            # re-read in case the human changed busy/dislike while we waited on the DM
-            helper = (self.agent(helper.name) or helper).with_cap(float(answer.split()[1]))
+            helper = helper.with_cap(float(answer.split()[1]))
             self.save_agent(helper)
-            return helper if not helper.bid_exceeds_cap(task) else None
-        return helper if answer == "YES" else None
+            bidding = not helper.bid_exceeds_cap(task)
+        else:
+            bidding = answer == "YES"
+        if bidding:
+            return helper
+        await self._post_and_log(helper.name, {"type": "passed", "name": helper.name, "task": task})
+        return None
 
     async def _auction_task(self, requester: Agent, task: str) -> str:
         remaining = await self._collect_bids(requester, task)
@@ -185,7 +199,7 @@ class Hub:
             if answer == "YES":
                 self._open_favor(task, requester.name, winner.name, result.price)
                 await self._post_and_log(
-                    winner.name, {"type": "result", "name": winner.name, "task": task, "price": result.price}
+                    winner.name, {"type": "awarded", "name": winner.name, "task": task, "price": result.price}
                 )
                 return f"{task}: {winner.name} for {result.price} credits (settles on /done {task})"
             await self._post_and_log(winner.name, {"type": "declined", "name": winner.name, "task": task})
@@ -208,10 +222,12 @@ class Hub:
         new_ledger = settle(self.state["ledger"], favor["requester"], favor["helper"], favor["price"])
         new_open = {k: v for k, v in self.state["open"].items() if k != task}
         self._commit({**self.state, "ledger": new_ledger, "open": new_open})
+        helper, requester = favor["helper"], favor["requester"]
+        # exactly one floor line per completed task; the ledger block is the command's reply
         await self._post_and_log(
-            favor["helper"], {"type": "settled", "name": favor["helper"], "task": task, "price": favor["price"]}
+            helper, {"type": "completed", "name": helper, "task": task, "price": favor["price"], "requester": requester}
         )
-        return f"{task} done. {favor['helper']} +{favor['price']}, {favor['requester']} -{favor['price']}.\n" + self.ledger_report()
+        return self.ledger_report()
 
     def open_favor(self, task: str) -> Optional[dict]:
         return self.state["open"].get(task.strip().lower())
@@ -232,9 +248,10 @@ class Hub:
     async def _payback(self, creditor: Agent, debtor_name: str) -> str:
         debtor = self.agent(debtor_name)
         owed = abs(self.balance(debtor_name))
+        # one friendly floor line. the amount owed stays in the DMs, it is never posted.
         await self._post_and_log(
             creditor.name,
-            {"type": "payback", "name": creditor.name, "busy_band": busy_band(creditor.busy), "debtor": debtor.name, "owed": owed},
+            {"type": "payback_request", "name": creditor.name, "busy_band": busy_band(creditor.busy), "debtor": debtor.name},
         )
         # gate 3, both humans
         a1 = await self.ask(creditor.discord_id, f"you're swamped and **{debtor.name}** owes {owed} credits. call in the favor? ✅/❌")
@@ -252,5 +269,7 @@ class Hub:
         task = min(free_tasks, key=debtor.bid)
         price = debtor.bid(task)
         self._open_favor(task, creditor.name, debtor.name, price)
-        await self._post_and_log(debtor.name, {"type": "result", "name": debtor.name, "task": task, "price": price})
+        await self._post_and_log(
+            debtor.name, {"type": "payback_done", "name": debtor.name, "task": task, "price": price, "creditor": creditor.name}
+        )
         return f"{debtor.name}'s agent offered to take **{task}** off {creditor.name}'s plate for {price} credits. settles on /done {task}."
