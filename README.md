@@ -125,6 +125,7 @@ As Maya (busy 9, two midterms):
 - `llm.py` - Claude calls: floor one-liners, reply parsing, photo check.
 - `flows.py` - the coordination logic (bailout, done, payback, shared log), Discord-free.
 - `gates.py` - DM ask with ✅/❌ (raw reaction events) or a typed yes/no in the same DM. No LLM.
+- `bailout-link/` - the Cubbie Skill that posts the bridge line (the Cubbie side of the bridge). Independent of the bot; its own tests live in `bailout-link/tests/`.
 - `store.py` - JSON state file.
 - `bot.py` - Discord commands.
 - `test_*.py` - unittest. Run `python -m unittest -v`.
