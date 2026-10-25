@@ -1,0 +1,8 @@
+cubbie: 1
+network:
+  runtime:
+    - discord.com
+secrets:
+  - env: BAILOUT_WEBHOOK_URL
+    label: Bailout webhook URL
+    help_url: https://support.discord.com/hc/en-us/articles/228383668
